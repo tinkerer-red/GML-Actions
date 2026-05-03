@@ -7,16 +7,6 @@ previous tag).
 
 ## Quick start
 
-### Option A: Add through GitHub's UI (easiest)
-
-1. In your library repo, go to the **Actions** tab.
-2. Click **New workflow**.
-3. Search the marketplace for **Release GameMaker Package**.
-4. Click the action, then **Use latest version**.
-5. GitHub drops a starter workflow into your repo - edit the `with:` block to match your project, commit, done.
-
-### Option B: Drop the workflow in by hand
-
 In each library repo, add `.github/workflows/release.yml`:
 
 ```yaml

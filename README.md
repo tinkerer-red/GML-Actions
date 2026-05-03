@@ -7,16 +7,6 @@ previous tag).
 
 ## Quick start
 
-### Option A: Add through GitHub's UI (easiest)
-
-1. In your library repo, go to the **Actions** tab.
-2. Click **New workflow**.
-3. Search the marketplace for **Release GameMaker Package**.
-4. Click the action, then **Use latest version**.
-5. GitHub drops a starter workflow into your repo - edit the `with:` block to match your project, commit, done.
-
-### Option B: Drop the workflow in by hand
-
 In each library repo, add `.github/workflows/release.yml`:
 
 ```yaml
@@ -49,12 +39,55 @@ jobs:
 
       - uses: tinkerer-red/release-actions@v1
         with:
+          # ----- packaging (required) -----------------------------------
+          # Path to the source .yyp inside this repo.
           project-file: "MyGame.yyp"
+
+          # Internal package id - drives the output filename and the
+          # package's .yyp basename.
           package-id: "MyLibrary"
-          package-name: "My Library"
-          package-publisher: "Tinkerer_Red"
+
+          # Comma-separated resource-tree folder names to include.
+          # Sub-folders are picked up automatically. Examples:
+          #   "MyLibrary"                       - root folder, everything inside
+          #   "MyLibrary/Core"                  - just one sub-folder
+          #   "MyLibrary/Core,MyLibrary/Extras" - multiple sub-folders
+          # The "folders/" prefix and ".yy" suffix are stripped if present.
           include-folders: "MyLibrary"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+          # ----- packaging (optional) -----------------------------------
+          # Display name shown in the IDE's package importer.
+          # Defaults to package-id when blank.
+          package-name: ""
+
+          # Publisher name shown next to the package in the IDE.
+          package-publisher: ""
+
+          # When "true", filename is "<package-id>-<version>.yymps"
+          # (e.g. MyLibrary-1.0.yymps). When "false", just "<package-id>.yymps".
+          append-version-to-filename: "true"
+
+          # ----- release notes ------------------------------------------
+          # Master switch. When "false", the action does not touch the
+          # release body at all. The two flags below have no effect when
+          # this is "false".
+          auto-generate-description: "true"
+
+          # When "true", append an "Issues Closed" section listing issues
+          # closed by closing-keyword references (close/fix/resolve + #N)
+          # in commits since the previous tag.
+          include-issues-in-description: "true"
+
+          # When "true", append a "Commits" section listing every commit
+          # since the previous tag.
+          include-commits-in-description: "true"
+
+          # ----- tooling ------------------------------------------------
+          # Pinned version of @gm-tools/project-tool from the GMPM registry.
+          project-tool-version: "2024.14.160"
+
+          # GMPM registry URL. Override only if you self-host the registry.
+          gmpm-registry: "https://gmpm.gamemaker.io"
 ```
 
 Tag and push to release:
@@ -63,31 +96,6 @@ Tag and push to release:
 git tag 1.0
 git push origin 1.0
 ```
-
-## Inputs
-
-| Input | Required | Default | Description |
-|---|---|---|---|
-| `project-file` | yes | - | Path to the source `.yyp` inside the consumer repo |
-| `package-id` | yes | - | Internal package id - drives the output filename and the package's `.yyp` basename |
-| `include-folders` | yes | - | Comma-separated resource-tree folder names to include |
-| `github-token` | yes | - | Pass `${{ secrets.GITHUB_TOKEN }}` |
-| `package-name` | no | (= `package-id`) | Display name shown in the IDE's package importer |
-| `package-publisher` | no | `""` | Publisher name shown next to the package |
-| `append-version-to-filename` | no | `"true"` | When `"true"`, produced filename is `<package-id>-<version>.yymps` |
-| `auto-generate-description` | no | `"true"` | When `"false"`, no release body is written |
-| `include-issues-in-description` | no | `"true"` | Include "Issues Closed" section |
-| `include-commits-in-description` | no | `"true"` | Include "Commits" section |
-| `project-tool-version` | no | `"2024.14.160"` | Pinned GMPM `project-tool` version |
-| `gmpm-registry` | no | `"https://gmpm.gamemaker.io"` | GMPM registry URL |
-
-### `include-folders` examples
-
-- `"MyLibrary"` - root folder, includes everything inside it
-- `"MyLibrary/Core"` - just one sub-folder
-- `"MyLibrary/Core,MyLibrary/Extras"` - multiple sub-folders
-
-The `folders/` prefix and `.yy` suffix are stripped if present, so pasting raw `folderPath` values from the `.yyp` also works.
 
 ## Outputs
 

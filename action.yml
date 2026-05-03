@@ -1,10 +1,10 @@
 name: Release GameMaker Package
-description: "Build a .yymps from a GameMaker project, attach it to the release, and fill in commits and closed issues."
+description: >-
+  Build a .yymps from a GameMaker project subfolder, attach it to the GitHub
+  release for the current tag, and optionally append templated release notes
+  (closed issues, commits since previous tag) to the body.
 author: Tinkerer_Red
 
-branding:
-  icon: package
-  color: purple
 inputs:
   # ----- packaging (required) ---------------------------------------------
   project-file:
@@ -65,11 +65,6 @@ inputs:
     description: "GMPM registry URL."
     required: false
     default: "https://gmpm.gamemaker.io"
-  github-token:
-    description: >-
-      Token for creating the release and reading issue titles. Pass
-      ${{ secrets.GITHUB_TOKEN }} from the consumer workflow.
-    required: true
 
 outputs:
   filename:
@@ -276,7 +271,7 @@ runs:
       id: notes
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ github.token }}
         RAW_VERSION: ${{ steps.ver.outputs.raw_version }}
         INCLUDE_ISSUES: ${{ inputs.include-issues-in-description }}
         INCLUDE_COMMITS: ${{ inputs.include-commits-in-description }}
@@ -353,4 +348,3 @@ runs:
         # text stays at the top, our template appends below it.
         append_body: true
         fail_on_unmatched_files: true
-        token: ${{ inputs.github-token }}

@@ -1,0 +1,35 @@
+name: Update floating major tag
+
+# Whenever a tag like v1.2.3 is pushed to this repo, force-update the v1
+# floating tag to point at the same commit. Consumers that pin to @v1 then
+# pick up the change on their next workflow run.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  update-major:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Need the full tag list for parsing.
+          fetch-depth: 0
+
+      - name: Force-update major tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          _fullTag="${GITHUB_REF_NAME}"
+          _major="${_fullTag%%.*}"
+          echo "Pointing ${_major} at ${_fullTag} (${GITHUB_SHA})"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f "${_major}" "${GITHUB_SHA}"
+          git push origin "${_major}" --force

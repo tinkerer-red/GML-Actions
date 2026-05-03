@@ -1,10 +1,10 @@
 name: Release GameMaker Package
-description: >-
-  Build a .yymps from a GameMaker project subfolder, attach it to the GitHub
-  release for the current tag, and optionally append templated release notes
-  (closed issues, commits since previous tag) to the body.
+description: "Build a .yymps from a GameMaker project, attach it to the release, and fill in commits and closed issues."
 author: Tinkerer_Red
 
+branding:
+  icon: package
+  color: purple
 inputs:
   # ----- packaging (required) ---------------------------------------------
   project-file:

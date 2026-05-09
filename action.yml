@@ -220,6 +220,25 @@ runs:
         echo "Resources to include: ${_resourceList}"
         echo "resources=${_resourceList}" >> "${GITHUB_OUTPUT}"
 
+    # project-tool refuses to load a .yyp that references prefab packages
+    # which aren't installed on the machine running it. The GameMaker IDE
+    # ships prefabs at a system path; CI runners don't have them. Strip
+    # `ForcedPrefabProjectReferences` from the runner's working copy of the
+    # .yyp so the load step succeeds. The runner's checkout is ephemeral,
+    # so source files in the consumer repo are not affected. Library
+    # packages don't carry forward host-project prefab dependencies anyway.
+    - name: Strip prefab references from project
+      shell: bash
+      env:
+        PROJECT_FILE: ${{ inputs.project-file }}
+      run: |
+        if grep -q '"ForcedPrefabProjectReferences"' "${PROJECT_FILE}"; then
+          perl -i -0pe 's/"ForcedPrefabProjectReferences":\s*\[[^\]]*\]/"ForcedPrefabProjectReferences":[]/g' "${PROJECT_FILE}"
+          echo "Stripped ForcedPrefabProjectReferences from ${PROJECT_FILE}"
+        else
+          echo "No ForcedPrefabProjectReferences in ${PROJECT_FILE} - skipping"
+        fi
+
     - name: Build yymps
       shell: bash
       env:

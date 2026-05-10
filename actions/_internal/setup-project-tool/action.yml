@@ -1,0 +1,57 @@
+name: Setup project-tool
+description: >-
+  Internal helper. Installs @gm-tools/project-tool from the GMPM registry
+  (with caching), locates the binary inside the package, and exposes its path.
+  Not intended for direct use - prefer the public actions in this repo.
+author: Tinkerer_Red
+
+inputs:
+  project-tool-version:
+    description: "Pinned version of @gm-tools/project-tool from the GMPM registry."
+    required: false
+    default: "2024.14.160"
+  gmpm-registry:
+    description: "GMPM registry URL."
+    required: false
+    default: "https://gmpm.gamemaker.io"
+
+outputs:
+  binary:
+    description: "Absolute path to the project-tool executable."
+    value: ${{ steps.locate.outputs.binary }}
+
+runs:
+  using: composite
+  steps:
+    - name: Cache project-tool
+      id: cache_tool
+      uses: actions/cache@v5
+      with:
+        path: .gm-tools
+        key: project-tool-linux-x64-${{ inputs.project-tool-version }}
+
+    - name: Install project-tool
+      if: steps.cache_tool.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GMPM_REGISTRY: ${{ inputs.gmpm-registry }}
+        PROJECT_TOOL_VERSION: ${{ inputs.project-tool-version }}
+      run: |
+        mkdir -p .gm-tools
+        npm install \
+          --prefix .gm-tools \
+          --registry "${GMPM_REGISTRY}" \
+          "@gm-tools/project-tool-linux-x64@${PROJECT_TOOL_VERSION}"
+
+    - name: Locate project-tool binary
+      id: locate
+      shell: bash
+      run: |
+        _binary=$(find .gm-tools/node_modules/@gm-tools -maxdepth 4 -type f -perm -u+x | head -n 1)
+        if [ -z "${_binary}" ]; then
+          echo "could not find project-tool binary - listing package contents:"
+          find .gm-tools/node_modules/@gm-tools -maxdepth 4 -type f -ls
+          exit 1
+        fi
+        echo "Found: ${_binary}"
+        echo "binary=${_binary}" >> "${GITHUB_OUTPUT}"

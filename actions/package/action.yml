@@ -1,0 +1,229 @@
+name: GameMaker Package
+description: "Build a .yymps from a GameMaker project and attach it to the release."
+author: Tinkerer_Red
+
+branding:
+  icon: package
+  color: purple
+
+inputs:
+  # ----- packaging (required) ---------------------------------------------
+  project-file:
+    description: "Path to the source .yyp inside the consumer repo."
+    required: true
+  package-id:
+    description: "Internal package id - drives the output filename and the package's .yyp basename."
+    required: true
+  include-folders:
+    description: >-
+      Comma-separated resource-tree folder names to include. Sub-folders are
+      picked up automatically. Examples: "MyLibrary", "MyLibrary/Core",
+      "MyLibrary/Core,MyLibrary/Extras". The "folders/" prefix and ".yy"
+      suffix are stripped if present.
+    required: true
+
+  # ----- packaging (optional) ---------------------------------------------
+  package-name:
+    description: "Display name shown in the IDE's package importer. Defaults to package-id."
+    required: false
+    default: ""
+  package-publisher:
+    description: "Publisher name shown next to the package in the IDE. Defaults to the repository owner when blank."
+    required: false
+    default: ""
+  append-version-to-filename:
+    description: 'When "true", filename is "<package-id>-<version>.yymps".'
+    required: false
+    default: "true"
+
+  # ----- tooling ----------------------------------------------------------
+  project-tool-version:
+    description: "Pinned version of @gm-tools/project-tool from the GMPM registry."
+    required: false
+    default: "2024.14.160"
+  gmpm-registry:
+    description: "GMPM registry URL."
+    required: false
+    default: "https://gmpm.gamemaker.io"
+
+outputs:
+  filename:
+    description: "Filename of the produced .yymps."
+    value: ${{ steps.filename.outputs.filename }}
+  version:
+    description: "Normalized 3-part version stamped into the package."
+    value: ${{ steps.ver.outputs.version }}
+  raw-version:
+    description: "Version exactly as the user tagged it (post-v-strip, pre-pad)."
+    value: ${{ steps.ver.outputs.raw_version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup project-tool
+      id: setup
+      uses: tinkerer-red/GML-Actions/actions/_internal/setup-project-tool@v2
+      with:
+        project-tool-version: ${{ inputs.project-tool-version }}
+        gmpm-registry: ${{ inputs.gmpm-registry }}
+
+    - name: Parse version
+      id: ver
+      uses: tinkerer-red/GML-Actions/actions/_internal/parse-version@v2
+
+    - name: Build output filename
+      id: filename
+      shell: bash
+      env:
+        APPEND_VERSION_TO_FILENAME: ${{ inputs.append-version-to-filename }}
+        PACKAGE_ID: ${{ inputs.package-id }}
+        RAW_VERSION: ${{ steps.ver.outputs.raw_version }}
+      run: |
+        if [ "${APPEND_VERSION_TO_FILENAME}" = "true" ]; then
+          _filename="${PACKAGE_ID}-${RAW_VERSION}.yymps"
+        else
+          _filename="${PACKAGE_ID}.yymps"
+        fi
+        echo "filename=${_filename}" >> "${GITHUB_OUTPUT}"
+        echo "Building ${PACKAGE_ID} ${RAW_VERSION} -> ${_filename}"
+
+    # The IDE's "Create Local Package" passes INCLUDERESOURCES with an
+    # explicit list of resource names, not INCLUDEFOLDERS. Replicate that
+    # by walking the .yyp and expanding the requested folder(s) into a
+    # comma-separated resource list.
+    - name: Expand folders to resource list
+      id: expand
+      shell: bash
+      env:
+        PROJECT_FILE: ${{ inputs.project-file }}
+        INCLUDE_FOLDERS: ${{ inputs.include-folders }}
+      run: |
+        cat > /tmp/expand-folders.mjs <<'NODE_EOF'
+        import * as fs from "node:fs";
+        import * as path from "node:path";
+
+        const _projectFile = process.argv[2];
+        const _folderInput = process.argv[3];
+        const _projectDir = path.dirname(_projectFile);
+
+        function parseRelaxed(_text) {
+        	let _str = _text;
+        	if (_str.charCodeAt(0) === 0xFEFF) {
+        		_str = _str.slice(1);
+        	}
+        	return JSON.parse(_str.replace(/,(\s*[\]}])/g, "$1"));
+        }
+
+        const _project = parseRelaxed(fs.readFileSync(_projectFile, "utf8"));
+        const _folderList = _folderInput.split(",").map(function (_folder) {
+        	return _folder.trim().replace(/^folders\//, "").replace(/\.yy$/, "");
+        }).filter(function (_folder) {
+        	return _folder.length > 0;
+        });
+
+        const _resourceNames = [];
+        for (const _resource of (_project.resources || [])) {
+        	const _yyPath = path.join(_projectDir, _resource.id.path);
+        	if (!fs.existsSync(_yyPath)) {
+        		continue;
+        	}
+        	const _yy = parseRelaxed(fs.readFileSync(_yyPath, "utf8"));
+        	const _parentPath = ((_yy.parent && _yy.parent.path) || "").replace(/\\/g, "/");
+
+        	let _matched = false;
+        	for (const _folder of _folderList) {
+        		const _matchExact = "folders/" + _folder + ".yy";
+        		const _matchPrefix = "folders/" + _folder + "/";
+        		if (_parentPath === _matchExact || _parentPath.startsWith(_matchPrefix)) {
+        			_matched = true;
+        			break;
+        		}
+        	}
+        	if (_matched) {
+        		_resourceNames.push(_resource.id.name);
+        	}
+        }
+
+        if (_resourceNames.length === 0) {
+        	process.stderr.write("no resources found in folders: " + _folderInput + "\n");
+        	process.exit(1);
+        }
+
+        process.stdout.write(_resourceNames.join(","));
+        NODE_EOF
+
+        _resourceList=$(node /tmp/expand-folders.mjs "${PROJECT_FILE}" "${INCLUDE_FOLDERS}")
+        echo "Resources to include: ${_resourceList}"
+        echo "resources=${_resourceList}" >> "${GITHUB_OUTPUT}"
+
+    # project-tool refuses to load a .yyp that references prefab packages
+    # which aren't installed on the machine running it. The GameMaker IDE
+    # ships prefabs at a system path; CI runners don't have them. Strip
+    # `ForcedPrefabProjectReferences` from the runner's working copy of the
+    # .yyp so the load step succeeds. The runner's checkout is ephemeral,
+    # so source files in the consumer repo are not affected. Library
+    # packages don't carry forward host-project prefab dependencies anyway.
+    - name: Strip prefab references from project
+      shell: bash
+      env:
+        PROJECT_FILE: ${{ inputs.project-file }}
+      run: |
+        if grep -q '"ForcedPrefabProjectReferences"' "${PROJECT_FILE}"; then
+          perl -i -0pe 's/"ForcedPrefabProjectReferences":\s*\[[^\]]*\]/"ForcedPrefabProjectReferences":[]/g' "${PROJECT_FILE}"
+          echo "Stripped ForcedPrefabProjectReferences from ${PROJECT_FILE}"
+        else
+          echo "No ForcedPrefabProjectReferences in ${PROJECT_FILE} - skipping"
+        fi
+
+    - name: Build yymps
+      shell: bash
+      env:
+        BINARY: ${{ steps.setup.outputs.binary }}
+        PROJECT_FILE: ${{ inputs.project-file }}
+        FILENAME: ${{ steps.filename.outputs.filename }}
+        PACKAGE_ID: ${{ inputs.package-id }}
+        PACKAGE_NAME_INPUT: ${{ inputs.package-name }}
+        PACKAGE_VERSION: ${{ steps.ver.outputs.version }}
+        PACKAGE_PUBLISHER: ${{ inputs.package-publisher }}
+        RESOURCES: ${{ steps.expand.outputs.resources }}
+      run: |
+        _displayName="${PACKAGE_NAME_INPUT:-${PACKAGE_ID}}"
+        _publisher="${PACKAGE_PUBLISHER:-${GITHUB_REPOSITORY_OWNER}}"
+        "${BINARY}" EXPORT \
+          "SOURCE=${PWD}/${PROJECT_FILE}" \
+          "DESTINATION=${PWD}/${FILENAME}" \
+          "PACKAGETYPE=Package" \
+          "PACKAGEID=${PACKAGE_ID}" \
+          "PACKAGENAME=${_displayName}" \
+          "PACKAGEVERSION=${PACKAGE_VERSION}" \
+          "PUBLISHERNAME=${_publisher}" \
+          "INCLUDERESOURCES=${RESOURCES}" \
+          "READONLY=TRUE"
+
+    # Sanity-check the output is a valid zip with the four required
+    # metadata files - cheap and catches silent failures.
+    - name: Verify yymps structure
+      shell: bash
+      env:
+        FILENAME: ${{ steps.filename.outputs.filename }}
+        PACKAGE_ID: ${{ inputs.package-id }}
+      run: |
+        if [ ! -f "${FILENAME}" ]; then
+          echo "expected output missing: ${FILENAME}"
+          exit 1
+        fi
+        unzip -l "${FILENAME}"
+        for _required in metadata.json yymanifest.xml "${PACKAGE_ID}.yyp" "${PACKAGE_ID}.resource_order"; do
+          if ! unzip -l "${FILENAME}" | grep -q " ${_required}\$"; then
+            echo "missing required file inside yymps: ${_required}"
+            exit 1
+          fi
+        done
+
+    # Attaches the yymps to the release. Does NOT touch the body, so it
+    # never conflicts with release-notes/* writing the body.
+    - name: Attach yymps to release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: ${{ steps.filename.outputs.filename }}
+        fail_on_unmatched_files: true

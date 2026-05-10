@@ -1,0 +1,46 @@
+name: Release Notes - Commits
+description: >-
+  Append a "Commits" section to the GitHub release body, listing every commit
+  since the previous tag. Composes with release-notes/header and
+  release-notes/issues.
+author: Tinkerer_Red
+
+branding:
+  icon: git-commit
+  color: purple
+
+runs:
+  using: composite
+  steps:
+    - name: Compute git range
+      id: range
+      uses: tinkerer-red/GML-Actions/actions/_internal/git-range@v2
+
+    - name: Build commits section
+      id: build
+      shell: bash
+      env:
+        RANGE: ${{ steps.range.outputs.range }}
+      run: |
+        _newline=$'\n'
+
+        _commits=$(git log "${RANGE}" --pretty=format:"- %s %h" 2>/dev/null || true)
+        if [ -z "${_commits}" ]; then
+          _commits="_(none)_"
+        fi
+
+        # Leading \n\n keeps this section from running into whatever was
+        # already in the body. Trailing newline keeps the body clean.
+        _body="${_newline}${_newline}### Commits:${_newline}${_commits}${_newline}"
+
+        {
+          printf '%s\n' "body<<__BODY_END_a8f3c2__"
+          printf '%s\n' "${_body}"
+          printf '%s\n' "__BODY_END_a8f3c2__"
+        } >> "${GITHUB_OUTPUT}"
+
+    - name: Append to release body
+      uses: softprops/action-gh-release@v2
+      with:
+        body: ${{ steps.build.outputs.body }}
+        append_body: true

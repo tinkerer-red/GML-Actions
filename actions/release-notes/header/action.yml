@@ -1,0 +1,42 @@
+name: Release Notes - Header
+description: >-
+  Append a release-notes header to the GitHub release body: an H1 with the
+  version, a few blank lines for the user to fill in a description, and a
+  horizontal rule. Composes with release-notes/issues and release-notes/commits.
+author: Tinkerer_Red
+
+branding:
+  icon: file-text
+  color: purple
+
+runs:
+  using: composite
+  steps:
+    - name: Parse version
+      id: ver
+      uses: tinkerer-red/GML-Actions/actions/_internal/parse-version@v2
+
+    - name: Build header
+      id: build
+      shell: bash
+      env:
+        RAW_VERSION: ${{ steps.ver.outputs.raw_version }}
+      run: |
+        _newline=$'\n'
+        # Leading \n\n ensures the header doesn't run into any text the user
+        # already typed in the GitHub UI when publishing. Trailing structure
+        # matches the existing template: title, blank, blank, blank, ---,
+        # blank, ready for the next section to append.
+        _body="${_newline}${_newline}# Release ${RAW_VERSION}:${_newline}${_newline}${_newline}${_newline}---${_newline}${_newline}"
+
+        {
+          printf '%s\n' "body<<__BODY_END_a8f3c2__"
+          printf '%s\n' "${_body}"
+          printf '%s\n' "__BODY_END_a8f3c2__"
+        } >> "${GITHUB_OUTPUT}"
+
+    - name: Append to release body
+      uses: softprops/action-gh-release@v2
+      with:
+        body: ${{ steps.build.outputs.body }}
+        append_body: true

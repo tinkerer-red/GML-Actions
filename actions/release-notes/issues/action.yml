@@ -1,0 +1,65 @@
+name: Release Notes - Issues Closed
+description: >-
+  Append an "Issues Closed" section to the GitHub release body, listing
+  issues closed by closing-keyword references (close/fix/resolve + #N) in
+  commits since the previous tag. Composes with release-notes/header and
+  release-notes/commits.
+author: Tinkerer_Red
+
+branding:
+  icon: check-circle
+  color: purple
+
+runs:
+  using: composite
+  steps:
+    - name: Compute git range
+      id: range
+      uses: tinkerer-red/GML-Actions/actions/_internal/git-range@v2
+
+    - name: Build issues section
+      id: build
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RANGE: ${{ steps.range.outputs.range }}
+      run: |
+        _newline=$'\n'
+
+        # Standard GitHub closing keywords:
+        #   close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved
+        _issueNumbers=$(git log "${RANGE}" --pretty=%B 2>/dev/null \
+          | grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?)[[:space:]]+#[0-9]+' \
+          | grep -oE '#[0-9]+' \
+          | tr -d '#' \
+          | sort -nu \
+          || true)
+
+        _issueLines=""
+        for _num in ${_issueNumbers}; do
+          _title=$(gh issue view "${_num}" --json title --jq .title 2>/dev/null || true)
+          if [ -n "${_title}" ]; then
+            _issueLines="${_issueLines}- ${_title} #${_num}${_newline}"
+          fi
+        done
+        if [ -z "${_issueLines}" ]; then
+          _issueLines="_(none)_"
+        fi
+        _issueLines="${_issueLines%${_newline}}"
+
+        # Leading \n\n keeps this section from running into whatever was
+        # already in the body. Trailing \n\n leaves room for the next
+        # section to append cleanly.
+        _body="${_newline}${_newline}### Issues Closed:${_newline}${_issueLines}${_newline}${_newline}"
+
+        {
+          printf '%s\n' "body<<__BODY_END_a8f3c2__"
+          printf '%s\n' "${_body}"
+          printf '%s\n' "__BODY_END_a8f3c2__"
+        } >> "${GITHUB_OUTPUT}"
+
+    - name: Append to release body
+      uses: softprops/action-gh-release@v2
+      with:
+        body: ${{ steps.build.outputs.body }}
+        append_body: true

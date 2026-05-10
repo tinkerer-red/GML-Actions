@@ -1,0 +1,37 @@
+name: Git range
+description: >-
+  Internal helper. Computes the commit range from the previous tag to the
+  current tag for use with `git log <range>`. If there is no previous tag
+  (first release), outputs just the current tag, which `git log` interprets
+  as "every commit reachable from this tag".
+  Not intended for direct use - prefer the public actions in this repo.
+author: Tinkerer_Red
+
+outputs:
+  range:
+    description: 'The git range, e.g. "v1.0.0..v1.1.0" or just "v1.0.0".'
+    value: ${{ steps.compute.outputs.range }}
+  has-previous:
+    description: '"true" if a previous tag was found, "false" otherwise.'
+    value: ${{ steps.compute.outputs.has_previous }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute range
+      id: compute
+      shell: bash
+      run: |
+        _currentTag="${GITHUB_REF_NAME}"
+        _previousTag=$(git describe --tags --abbrev=0 "${_currentTag}^" 2>/dev/null || true)
+
+        if [ -n "${_previousTag}" ]; then
+          _range="${_previousTag}..${_currentTag}"
+          echo "Comparing ${_previousTag}..${_currentTag}"
+          echo "has_previous=true" >> "${GITHUB_OUTPUT}"
+        else
+          _range="${_currentTag}"
+          echo "First release - including all commits up to ${_currentTag}"
+          echo "has_previous=false" >> "${GITHUB_OUTPUT}"
+        fi
+        echo "range=${_range}" >> "${GITHUB_OUTPUT}"

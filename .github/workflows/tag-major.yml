@@ -1,7 +1,7 @@
 name: Update floating major tag
 
-# Whenever a tag like v1.2.3 is pushed to this repo, force-update the v1
-# floating tag to point at the same commit. Consumers that pin to @v1 then
+# Whenever a tag like v2.1.0 is pushed to this repo, force-update the v2
+# floating tag to point at the same commit. Consumers that pin to @v2 then
 # pick up the change on their next workflow run.
 on:
   push:
@@ -16,9 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
-          # Need the full tag list for parsing.
           fetch-depth: 0
 
       - name: Force-update major tag

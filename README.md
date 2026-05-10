@@ -14,7 +14,7 @@ compose them in your own workflows.
 | **Release Notes - Commits** | [`actions/release-notes/commits`](actions/release-notes/commits/action.yml) | Append "Commits" section listing commits since previous tag |
 
 `_internal/` actions are shared helpers called by the public actions above.
-Do not reference them directly — their contracts are unstable.
+Do not reference them directly, their contracts are unstable.
 
 ## Quick start
 
@@ -29,7 +29,7 @@ Provided are ready-made workflow files you can drop directly into your
 Both workflows trigger on the same tag patterns so they run in parallel.
 Each can be re-run or disabled independently. Drop either one you don't need.
 
-**Minimum setup** — edit the required inputs in your imported workflow, as an example `release-package.yml`:
+**Minimum setup** : edit the required inputs in your imported workflow, as an example `release-package.yml`:
 
 ```yaml
 project-file: "MyGame.yyp"   # path to your .yyp

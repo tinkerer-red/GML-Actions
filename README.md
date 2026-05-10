@@ -8,17 +8,17 @@ compose them in your own workflows.
 
 | Action | Path | Purpose |
 |---|---|---|
-| **GameMaker Package** | `actions/package` | Build a `.yymps` from a project subfolder, attach to release |
-| **Release Notes - Header** | `actions/release-notes/header` | Append `# Release X:` + description placeholder + `---` to release body |
-| **Release Notes - Issues** | `actions/release-notes/issues` | Append "Issues Closed" section listing closing-keyword references |
-| **Release Notes - Commits** | `actions/release-notes/commits` | Append "Commits" section listing commits since previous tag |
+| **GameMaker Package** | [`actions/package`](actions/package/action.yml) | Build a `.yymps` from a project subfolder, attach to release |
+| **Release Notes - Header** | [`actions/release-notes/header`](actions/release-notes/header/action.yml) | Append `# Release X:` + description placeholder + `---` to release body |
+| **Release Notes - Issues** | [`actions/release-notes/issues`](actions/release-notes/issues/action.yml) | Append "Issues Closed" section listing closing-keyword references |
+| **Release Notes - Commits** | [`actions/release-notes/commits`](actions/release-notes/commits/action.yml) | Append "Commits" section listing commits since previous tag |
 
 `_internal/` actions are shared helpers called by the public actions above.
 Do not reference them directly — their contracts are unstable.
 
 ## Quick start
 
-We provide ready-made workflow files you can drop directly into your
+Provided are ready-made workflow files you can drop directly into your
 `.github/workflows/` folder. Download or copy the ones you want:
 
 | Workflow file | What it does |
@@ -29,7 +29,7 @@ We provide ready-made workflow files you can drop directly into your
 Both workflows trigger on the same tag patterns so they run in parallel.
 Each can be re-run or disabled independently. Drop either one you don't need.
 
-**Minimum setup** — edit the two required inputs in `release-package.yml`:
+**Minimum setup** — edit the required inputs in your imported workflow, as an example `release-package.yml`:
 
 ```yaml
 project-file: "MyGame.yyp"   # path to your .yyp
@@ -101,24 +101,3 @@ Pin to an exact version if you want immutability:
 ```
 
 Breaking changes only ship in new major versions (`v3`, `v4`, etc).
-
-## Repo layout
-
-```
-GML-Actions/
-├── actions/
-│   ├── package/                 # public: build & attach .yymps
-│   ├── release-notes/
-│   │   ├── header/              # public: H1 + description placeholder + ---
-│   │   ├── issues/              # public: "Issues Closed" section
-│   │   └── commits/             # public: "Commits" section
-│   └── _internal/               # shared helpers - not for direct use
-│       ├── setup-project-tool/
-│       ├── parse-version/
-│       └── git-range/
-├── workflows/                   # ready-made consumer workflow files
-│   ├── release-package.yml
-│   └── release-notes.yml
-└── .github/workflows/
-    └── tag-major.yml            # maintains the floating v2 tag
-```

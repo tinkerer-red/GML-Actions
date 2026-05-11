@@ -68,14 +68,14 @@ runs:
 
     # ── Compile ────────────────────────────────────────────────────────────
     # Sets GM_PROJECT_FILE, GM_PROJECT_NAME, GM_PROJECT_DIRECTORY, GM_CACHE_PATH
-    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-compile@v2
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-compile@v2.1.1
       with:
         project-file: ${{ inputs.project-file }}
         toolchain:    ${{ inputs.toolchain }}
 
     # ── Docs metadata ─────────────────────────────────────────────────────
     # Sets TOME_RELEASE_TAG, TOME_OLDER_VERSION, HAS_GH_PAGES_BRANCH
-    - uses: tinkerer-red/GML-Actions/actions/_internal/resolve-docs-meta@v2
+    - uses: tinkerer-red/GML-Actions/actions/_internal/resolve-docs-meta@v2.1.1
       id: meta
       with:
         release-tag: ${{ inputs.release-tag }}
@@ -102,7 +102,7 @@ runs:
     # ── Run ────────────────────────────────────────────────────────────────
     # Sets GM_RUNNER_LOG, GM_RUNNER_EXIT_CODE. All TOME_* vars are inherited
     # by the child process via GITHUB_ENV.
-    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-run@v2
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-run@v2.1.1
 
     # ── Diagnostic report ──────────────────────────────────────────────────
     # Runs unconditionally so artifacts are always produced. Parses the runner
@@ -281,7 +281,7 @@ runs:
           Format-Table -AutoSize
 
     # ── Publish ────────────────────────────────────────────────────────────
-    - uses: tinkerer-red/GML-Actions/actions/_internal/gh-pages-publish@v2
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gh-pages-publish@v2.1.1
       with:
         output-path: ${{ inputs.output-path }}
         release-tag: ${{ env.TOME_RELEASE_TAG }}

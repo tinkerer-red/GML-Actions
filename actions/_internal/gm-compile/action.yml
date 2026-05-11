@@ -1,0 +1,111 @@
+name: GameMaker Compile
+description: >-
+  Internal helper. Sets up Node.js, auto-detects the .yyp, caches the
+  GameMaker runtime, and compiles via gm-cli. Exports GM_PROJECT_FILE,
+  GM_PROJECT_NAME, GM_PROJECT_DIRECTORY, and GM_CACHE_PATH to GITHUB_ENV for
+  downstream steps. Requires a windows-latest runner.
+author: Tinkerer_Red
+
+inputs:
+  project-file:
+    description: >-
+      Path to the .yyp relative to the repo root. If omitted the action
+      searches recursively; fails if zero or more than one are found.
+    required: false
+    default: ""
+  toolchain:
+    description: "gm-cli toolchain version, e.g. GMS2@2024.14.3.260. Empty = latest."
+    required: false
+    default: ""
+
+outputs:
+  project-file:
+    description: "Resolved absolute path to the .yyp."
+    value: ${{ steps.resolve.outputs.project_file }}
+  project-name:
+    description: "Project filename without extension."
+    value: ${{ steps.resolve.outputs.project_name }}
+  project-directory:
+    description: "Directory containing the .yyp."
+    value: ${{ steps.resolve.outputs.project_directory }}
+  gm-cache-path:
+    description: "Project-local .gmcache directory path."
+    value: ${{ steps.resolve.outputs.gm_cache_path }}
+
+runs:
+  using: composite
+  steps:
+
+    - name: Setup Node.js 24
+      uses: actions/setup-node@v4
+      with:
+        node-version: "24"
+
+    - name: Resolve project file
+      id: resolve
+      shell: pwsh
+      env:
+        INPUT_PROJECT_FILE: ${{ inputs.project-file }}
+      run: |
+        if ($env:INPUT_PROJECT_FILE -ne "") {
+          $item = Get-Item $env:INPUT_PROJECT_FILE -ErrorAction Stop
+        } else {
+          $items = @(Get-ChildItem -Filter "*.yyp" -Recurse -File)
+          if ($items.Count -eq 0) {
+            Write-Error "No .yyp file found. Set the project-file input."
+            exit 1
+          }
+          if ($items.Count -gt 1) {
+            $list = ($items | ForEach-Object { "  " + $_.FullName }) -join "`n"
+            Write-Error "Multiple .yyp files found - set the project-file input:`n$list"
+            exit 1
+          }
+          $item = $items[0]
+        }
+
+        $projectFile = $item.FullName
+        $projectName = [IO.Path]::GetFileNameWithoutExtension($projectFile)
+        $projectDir  = [IO.Path]::GetDirectoryName($projectFile)
+        $gmCachePath = Join-Path $projectDir ".gmcache"
+
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_FILE=$projectFile"
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_NAME=$projectName"
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_DIRECTORY=$projectDir"
+        Add-Content $env:GITHUB_ENV "GM_CACHE_PATH=$gmCachePath"
+
+        Add-Content $env:GITHUB_OUTPUT "project_file=$projectFile"
+        Add-Content $env:GITHUB_OUTPUT "project_name=$projectName"
+        Add-Content $env:GITHUB_OUTPUT "project_directory=$projectDir"
+        Add-Content $env:GITHUB_OUTPUT "gm_cache_path=$gmCachePath"
+
+        Write-Output "Project : $projectFile"
+        Write-Output "Cache   : $gmCachePath"
+
+    # Caching runtimes-gms2 avoids a full runtime download on cold runners.
+    # The key includes toolchain so different runtime versions cache separately.
+    - name: Cache GameMaker runtime
+      uses: actions/cache@v5
+      with:
+        path: ${{ steps.resolve.outputs.gm_cache_path }}/runtimes-gms2
+        key: gmcache-gms2-windows-vm-${{ inputs.toolchain || 'latest' }}
+
+    - name: Compile with gm-cli
+      shell: pwsh
+      env:
+        INPUT_TOOLCHAIN: ${{ inputs.toolchain }}
+      run: |
+        $gm_args = @(
+          "compile",
+          $env:GM_PROJECT_FILE,
+          "--target=windows",
+          "--runtime=vm"
+        )
+        if ($env:INPUT_TOOLCHAIN -ne "") {
+          $gm_args += "--toolchain=$($env:INPUT_TOOLCHAIN)"
+        }
+        Write-Output "npx @gamemaker/gm-cli@latest $($gm_args -join ' ')"
+        npx "@gamemaker/gm-cli@latest" @gm_args
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "gm-cli compile failed (exit $LASTEXITCODE)"
+          exit $LASTEXITCODE
+        }

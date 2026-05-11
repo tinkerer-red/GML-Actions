@@ -1,0 +1,287 @@
+name: Generate GameMaker Docs
+description: >-
+  Compile a GameMaker project, run it with Tome to generate documentation,
+  and publish the output to the gh-pages branch. Requires a windows-latest
+  runner and contents: write permission.
+author: Tinkerer_Red
+
+branding:
+  icon: book-open
+  color: blue
+
+inputs:
+  # ----- project (optional) ------------------------------------------------
+  project-file:
+    description: >-
+      Path to the .yyp file relative to the repo root. If omitted the action
+      searches recursively for a single .yyp; fails if zero or more than one
+      are found.
+    required: false
+    default: ""
+
+  # ----- toolchain (optional) ----------------------------------------------
+  toolchain:
+    description: >-
+      GameMaker toolchain version passed to gm-cli, e.g. GMS2@2024.14.3.260.
+      Leave empty to use the latest available.
+    required: false
+    default: ""
+
+  # ----- versioning (optional) ---------------------------------------------
+  release-tag:
+    description: >-
+      Version label for the generated docs. On release events the GitHub tag
+      is used automatically. On manual runs this value wins when provided;
+      otherwise the action reads the current version from gh-pages/config.js.
+    required: false
+    default: ""
+
+  # ----- output (optional) -------------------------------------------------
+  output-path:
+    description: >-
+      Absolute path where Tome writes the generated site. Must match
+      TOME_LOCAL_REPO_PATH in your project for legacy Tome, or be the path
+      Tome reads from TOME_OUTPUT_PATH for CI-aware Tome.
+    required: false
+    default: "C:/tome-output"
+
+  # ----- behaviour (optional) ----------------------------------------------
+  create-issue-on-failure:
+    description: >-
+      When "true", open a GitHub issue if Tome reports doc generation failure.
+      Requires issues: write permission in the calling workflow.
+    required: false
+    default: "false"
+  verbose:
+    description: 'When "true", passes TOME_CI_VERBOSE=1 to the GameMaker runner.'
+    required: false
+    default: "false"
+
+outputs:
+  release-tag:
+    description: "The docs version that was generated."
+    value: ${{ steps.meta.outputs.release-tag }}
+
+runs:
+  using: composite
+  steps:
+
+    # ── Compile ────────────────────────────────────────────────────────────
+    # Sets GM_PROJECT_FILE, GM_PROJECT_NAME, GM_PROJECT_DIRECTORY, GM_CACHE_PATH
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-compile@v2
+      with:
+        project-file: ${{ inputs.project-file }}
+        toolchain:    ${{ inputs.toolchain }}
+
+    # ── Docs metadata ─────────────────────────────────────────────────────
+    # Sets TOME_RELEASE_TAG, TOME_OLDER_VERSION, HAS_GH_PAGES_BRANCH
+    - uses: tinkerer-red/GML-Actions/actions/_internal/resolve-docs-meta@v2
+      id: meta
+      with:
+        release-tag: ${{ inputs.release-tag }}
+
+    # ── Tome env vars ──────────────────────────────────────────────────────
+    # Written to GITHUB_ENV so they are present in the GameMaker child process.
+    # TOME_RELEASE_TAG and TOME_OLDER_VERSION are already set by resolve-docs-meta.
+    - name: Set Tome environment variables
+      shell: pwsh
+      env:
+        INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
+        INPUT_VERBOSE:     ${{ inputs.verbose }}
+      run: |
+        Add-Content $env:GITHUB_ENV "TOME_CI_MODE=1"
+        Add-Content $env:GITHUB_ENV "TOME_OUTPUT_PATH=$($env:INPUT_OUTPUT_PATH)"
+        if ($env:INPUT_VERBOSE -eq "true") {
+          Add-Content $env:GITHUB_ENV "TOME_CI_VERBOSE=1"
+        }
+        Write-Output "TOME_CI_MODE       = 1"
+        Write-Output "TOME_OUTPUT_PATH   = $($env:INPUT_OUTPUT_PATH)"
+        Write-Output "TOME_RELEASE_TAG   = $($env:TOME_RELEASE_TAG)"
+        Write-Output "TOME_OLDER_VERSION = $($env:TOME_OLDER_VERSION)"
+
+    # ── Run ────────────────────────────────────────────────────────────────
+    # Sets GM_RUNNER_LOG, GM_RUNNER_EXIT_CODE. All TOME_* vars are inherited
+    # by the child process via GITHUB_ENV.
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-run@v2
+
+    # ── Diagnostic report ──────────────────────────────────────────────────
+    # Runs unconditionally so artifacts are always produced. Parses the runner
+    # log for Tome's status strings and warning lines, lists all generated
+    # files with sizes, and writes a structured markdown report. Sets
+    # TOME_SUCCEEDED, TOME_FAILED, TOME_REPORT_PATH, and TOME_LOG_DIR for
+    # downstream steps.
+    - name: Write Tome diagnostic report
+      if: always()
+      shell: pwsh
+      run: |
+        $logDir     = Join-Path $env:RUNNER_TEMP "tome-diagnostics"
+        $reportPath = Join-Path $logDir "tome-report.md"
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
+        # Copy runner log into the diagnostics bundle
+        if ($env:GM_RUNNER_LOG -ne "" -and (Test-Path $env:GM_RUNNER_LOG)) {
+          Copy-Item $env:GM_RUNNER_LOG (Join-Path $logDir "runner.log") -Force
+        }
+        $runnerLogPath = Join-Path $logDir "runner.log"
+
+        if (!(Test-Path $runnerLogPath)) {
+          @(
+            "# Tome diagnostic report",
+            "",
+            "Repository: $env:GITHUB_REPOSITORY",
+            "Commit: $env:GITHUB_SHA",
+            "Release tag: $env:TOME_RELEASE_TAG",
+            "Older versions: $env:TOME_OLDER_VERSION",
+            "Workflow run: $env:GITHUB_RUN_ID",
+            "",
+            "No runner log was produced."
+          ) | Out-File $reportPath -Encoding utf8
+          Add-Content $env:GITHUB_ENV "TOME_LOG_DIR=$logDir"
+          Add-Content $env:GITHUB_ENV "TOME_REPORT_PATH=$reportPath"
+          Add-Content $env:GITHUB_ENV "TOME_FAILED=false"
+          Add-Content $env:GITHUB_ENV "TOME_SUCCEEDED=false"
+          exit 0
+        }
+
+        $logText       = Get-Content $runnerLogPath -Raw
+        $tomeFailed    = $logText -match "Tome: Doc generation failed"
+        $tomeSucceeded = $logText -match "Tome: All docs generated!"
+
+        $warningLines = Get-Content $runnerLogPath |
+          Where-Object {
+            $_ -match "Warnings:" -or
+            $_ -match "^\s*\|" -or
+            $_ -match "^\s*[A-Za-z0-9_./\\-]+ \[line [0-9]+\]" -or
+            $_ -match "The given slug file" -or
+            $_ -match "Something went wrong during parsing" -or
+            $_ -match "Tome: Doc generation failed"
+          }
+
+        $report = [System.Collections.Generic.List[string]]::new()
+        $report.Add("# Tome diagnostic report")
+        $report.Add("")
+        $report.Add("Repository: $env:GITHUB_REPOSITORY")
+        $report.Add("Commit: $env:GITHUB_SHA")
+        $report.Add("Release tag: $env:TOME_RELEASE_TAG")
+        $report.Add("Older versions: $env:TOME_OLDER_VERSION")
+        $report.Add("Workflow run: $env:GITHUB_RUN_ID")
+        $report.Add("Runner exit code: $env:GM_RUNNER_EXIT_CODE")
+        $report.Add("")
+        $report.Add("## Tome status")
+        $report.Add("")
+        $report.Add("Tome succeeded: $tomeSucceeded")
+        $report.Add("Tome failed: $tomeFailed")
+        $report.Add("")
+        $report.Add("## Tome warnings")
+        $report.Add("")
+        if ($warningLines.Count -eq 0) {
+          $report.Add("No Tome warnings were detected.")
+        } else {
+          $report.Add('```text')
+          foreach ($line in $warningLines) { $report.Add($line) }
+          $report.Add('```')
+        }
+        $report.Add("")
+        $report.Add("## Generated files")
+        $report.Add("")
+        if (Test-Path $env:TOME_OUTPUT_PATH) {
+          $files = Get-ChildItem $env:TOME_OUTPUT_PATH -Recurse -File | Sort-Object FullName
+          foreach ($f in $files) {
+            $rel = $f.FullName.Substring($env:TOME_OUTPUT_PATH.Length).TrimStart("\", "/")
+            $report.Add("- $rel ($($f.Length) bytes)")
+          }
+        } else {
+          $report.Add("Tome output directory does not exist.")
+        }
+
+        $report | Out-File $reportPath -Encoding utf8
+        Get-Content $reportPath | Write-Output
+
+        Add-Content $env:GITHUB_ENV "TOME_LOG_DIR=$logDir"
+        Add-Content $env:GITHUB_ENV "TOME_REPORT_PATH=$reportPath"
+        Add-Content $env:GITHUB_ENV "TOME_FAILED=$($tomeFailed.ToString().ToLower())"
+        Add-Content $env:GITHUB_ENV "TOME_SUCCEEDED=$($tomeSucceeded.ToString().ToLower())"
+
+    # ── Artifacts ─────────────────────────────────────────────────────────
+    - name: Upload Tome output artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: tome-output-${{ env.TOME_RELEASE_TAG }}
+        path: ${{ inputs.output-path }}/
+        if-no-files-found: warn
+
+    - name: Upload diagnostics artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: tome-diagnostics-${{ env.TOME_RELEASE_TAG }}
+        path: |
+          ${{ env.TOME_LOG_DIR }}/
+          **/.gmcache/build-gms2-windows-VM/output/
+        if-no-files-found: warn
+
+    # ── Issue on failure ───────────────────────────────────────────────────
+    # Writes the issue body to a file so multiline content and special
+    # characters are handled correctly by gh issue create --body-file.
+    - name: Create issue on Tome failure
+      if: always() && env.TOME_FAILED == 'true' && inputs.create-issue-on-failure == 'true'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $issueBodyPath = Join-Path $env:TOME_LOG_DIR "issue-body.md"
+        $runUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+
+        @(
+          "# Tome docs failed",
+          "",
+          "Release tag: $env:TOME_RELEASE_TAG",
+          "Older versions: $env:TOME_OLDER_VERSION",
+          "Commit: $env:GITHUB_SHA",
+          "Workflow run: $runUrl",
+          "",
+          "## Diagnostic report",
+          ""
+        ) | Out-File $issueBodyPath -Encoding utf8
+
+        if (Test-Path $env:TOME_REPORT_PATH) {
+          Get-Content $env:TOME_REPORT_PATH | Out-File $issueBodyPath -Encoding utf8 -Append
+        } else {
+          "No Tome report was generated." | Out-File $issueBodyPath -Encoding utf8 -Append
+        }
+
+        $title = "Tome docs failed for $env:TOME_RELEASE_TAG"
+        gh issue create --title $title --body-file $issueBodyPath
+
+    # ── Validate Tome status ───────────────────────────────────────────────
+    # Explicit gate before publishing: fail the job cleanly with a useful
+    # message rather than letting a broken publish attempt run.
+    - name: Validate Tome status
+      shell: pwsh
+      run: |
+        if ($env:TOME_FAILED -eq "true") {
+          Write-Error "Tome reported doc-generation failure. See tome-report.md and runner.log in the diagnostics artifact."
+          exit 1
+        }
+
+        if ($env:TOME_SUCCEEDED -ne "true") {
+          Write-Error "Tome did not report successful doc generation. The project may not have compiled or the runner crashed before Tome ran. See the diagnostics artifact."
+          exit 1
+        }
+
+        if (!(Test-Path $env:TOME_OUTPUT_PATH)) {
+          Write-Error "Tome output directory does not exist: $env:TOME_OUTPUT_PATH"
+          exit 1
+        }
+
+        Write-Output "Tome reported successful doc generation."
+        Get-ChildItem $env:TOME_OUTPUT_PATH -Recurse |
+          Select-Object FullName, Length |
+          Format-Table -AutoSize
+
+    # ── Publish ────────────────────────────────────────────────────────────
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gh-pages-publish@v2
+      with:
+        output-path: ${{ inputs.output-path }}
+        release-tag: ${{ env.TOME_RELEASE_TAG }}

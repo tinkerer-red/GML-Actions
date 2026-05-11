@@ -1,0 +1,98 @@
+name: Publish to gh-pages
+description: >-
+  Internal helper. Overlays a local output directory onto the gh-pages branch
+  and pushes. On first use it creates an orphan gh-pages branch automatically.
+  Existing content not present in the output directory is preserved, so
+  previous version folders survive incremental publishes. Requires
+  contents: write permission in the calling workflow.
+author: Tinkerer_Red
+
+inputs:
+  output-path:
+    description: "Local directory whose contents are overlaid onto gh-pages."
+    required: true
+  release-tag:
+    description: "Version label used in the commit message."
+    required: true
+
+outputs:
+  published:
+    description: '"true" when changes were committed and pushed; "false" when nothing changed.'
+    value: ${{ steps.push.outputs.published }}
+
+runs:
+  using: composite
+  steps:
+
+    - name: Clone or init gh-pages
+      shell: pwsh
+      env:
+        GH_TOKEN:          ${{ github.token }}
+        INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
+      run: |
+        $outputPath = $env:INPUT_OUTPUT_PATH
+        if (-not (Test-Path $outputPath)) {
+          Write-Error "Output path not found: $outputPath"
+          exit 1
+        }
+
+        $repoUrl   = "https://x-access-token:$($env:GH_TOKEN)@github.com/$($env:GITHUB_REPOSITORY).git"
+        $tmpDir    = Join-Path $env:RUNNER_TEMP "gh-pages-publish"
+
+        if (Test-Path $tmpDir) {
+          Remove-Item $tmpDir -Recurse -Force
+        }
+
+        $remote    = git ls-remote origin refs/heads/gh-pages
+        $hasBranch = ($LASTEXITCODE -eq 0) -and ($null -ne $remote) -and ($remote -ne "")
+
+        if ($hasBranch) {
+          git clone --branch gh-pages --single-branch --depth 1 $repoUrl $tmpDir
+        } else {
+          New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+          git init $tmpDir
+          Push-Location $tmpDir
+          git checkout -b gh-pages
+          git remote add origin $repoUrl
+          Pop-Location
+        }
+
+        Add-Content $env:GITHUB_ENV "GH_PAGES_TMP=$tmpDir"
+        Write-Output "gh-pages exists: $hasBranch"
+
+    - name: Overlay output and push
+      id: push
+      shell: pwsh
+      env:
+        INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
+        INPUT_RELEASE_TAG: ${{ inputs.release-tag }}
+      run: |
+        Get-ChildItem $env:INPUT_OUTPUT_PATH -Force | ForEach-Object {
+          $targetPath = Join-Path $env:GH_PAGES_TMP $_.Name
+
+          if ($_.PSIsContainer) {
+            if (Test-Path $targetPath) {
+              Remove-Item $targetPath -Recurse -Force
+            }
+
+            Copy-Item $_.FullName $targetPath -Recurse -Force
+          } else {
+            Copy-Item $_.FullName $targetPath -Force
+          }
+        }
+
+        Push-Location $env:GH_PAGES_TMP
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add --all
+        $changes = git status --porcelain
+        if ($changes) {
+          git commit -m "docs: publish v$($env:INPUT_RELEASE_TAG) [skip ci]"
+          git push origin HEAD:gh-pages
+          Write-Output "Published v$($env:INPUT_RELEASE_TAG) to gh-pages."
+          Add-Content $env:GITHUB_OUTPUT "published=true"
+        } else {
+          Write-Output "No changes to publish."
+          Add-Content $env:GITHUB_OUTPUT "published=false"
+        }
+        Pop-Location

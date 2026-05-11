@@ -1,0 +1,144 @@
+name: Resolve Docs Metadata
+description: >-
+  Internal helper. Fetches the gh-pages branch and resolves two things:
+  (1) the docs version label (release event tag > manual override >
+  gh-pages/config.js latestVersion > newest gh-pages version folder >
+  branch name), and (2) a compact JSON array of older version folders in
+  descending order. Writes TOME_RELEASE_TAG, TOME_OLDER_VERSION, and
+  HAS_GH_PAGES_BRANCH to GITHUB_ENV. A missing gh-pages branch is not a
+  failure; it produces an empty older-versions array.
+author: Tinkerer_Red
+
+inputs:
+  release-tag:
+    description: >-
+      Manual version override. Ignored on release events (which always use the
+      GitHub release tag). On workflow_dispatch runs, supplying this avoids the
+      gh-pages lookup entirely.
+    required: false
+    default: ""
+
+outputs:
+  release-tag:
+    description: "Resolved docs version label (v-prefix stripped)."
+    value: ${{ steps.resolve_version.outputs.release_tag }}
+  older-versions:
+    description: "Compact JSON array of older version folder names, newest first."
+    value: ${{ steps.resolve_older.outputs.older_versions }}
+
+runs:
+  using: composite
+  steps:
+
+    # Fetch once so both resolution steps can read git objects from gh-pages.
+    - name: Fetch gh-pages branch
+      shell: pwsh
+      run: |
+        $remote = git ls-remote origin refs/heads/gh-pages
+        $hasBranch = ($LASTEXITCODE -eq 0) -and ($null -ne $remote) -and ($remote -ne "")
+        if ($hasBranch) {
+          git fetch origin gh-pages --depth=1
+        }
+        Add-Content $env:GITHUB_ENV "HAS_GH_PAGES_BRANCH=$($hasBranch.ToString().ToLower())"
+        Write-Output "gh-pages exists: $hasBranch"
+        exit 0
+
+    # Resolution priority:
+    #   1. Release event      -> github.event.release.tag_name (definitive)
+    #   2. Manual override    -> inputs.release-tag
+    #   3. gh-pages config.js -> latestVersion field
+    #   4. gh-pages folders   -> newest version-looking directory
+    #   5. Last resort        -> GITHUB_REF_NAME (avoids creating a "main/" folder)
+    - name: Resolve docs version
+      id: resolve_version
+      shell: pwsh
+      env:
+        INPUT_RELEASE_TAG: ${{ inputs.release-tag }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        RELEASE_TAG_NAME:  ${{ github.event.release.tag_name }}
+      run: |
+        $tag = ""
+
+        if ($env:GITHUB_EVENT_NAME -eq "release") {
+          $tag = $env:RELEASE_TAG_NAME -replace "^v", ""
+          Write-Output "Source: release event -> $tag"
+        } elseif ($env:INPUT_RELEASE_TAG -ne "") {
+          $tag = $env:INPUT_RELEASE_TAG -replace "^v", ""
+          Write-Output "Source: manual override -> $tag"
+        } elseif ($env:HAS_GH_PAGES_BRANCH -eq "true") {
+          $cfg = git show origin/gh-pages:config.js 2>$null
+          if ($LASTEXITCODE -eq 0 -and $cfg) {
+            try {
+              $configJson = ($cfg -join "`n")
+              $configJson = $configJson -replace "^\s*const\s+config\s*=\s*", ""
+              $configJson = $configJson -replace ";\s*$", ""
+              $configData = $configJson | ConvertFrom-Json
+
+              if ($null -ne $configData.latestVersion -and $configData.latestVersion -ne "") {
+                $tag = [string]$configData.latestVersion
+                $tag = $tag -replace "^v", ""
+                Write-Output "Source: gh-pages/config.js -> $tag"
+              }
+            } catch {
+              Write-Output "Could not parse gh-pages/config.js. Falling back to version folders."
+            }
+          }
+
+          if ($tag -eq "") {
+            $entries = (git ls-tree --name-only origin/gh-pages 2>&1) -split "`n" |
+              Where-Object { $_ -match "^\d" }
+            $sorted = @($entries | Sort-Object {
+              $v = $_ -replace "^v", ""
+              $parts = $v -split "\."
+              while ($parts.Count -lt 4) { $parts += ,"0" }
+              try { [version]($parts[0..3] -join ".") } catch { [version]"0.0.0.0" }
+            } -Descending)
+            if ($sorted.Count -gt 0) {
+              $tag = $sorted[0] -replace "^v", ""
+              Write-Output "Source: gh-pages newest folder -> $tag"
+            }
+          }
+        }
+
+        if ($tag -eq "") {
+          $tag = $env:GITHUB_REF_NAME
+          Write-Output "Source: branch name (last resort) -> $tag"
+        }
+
+        Add-Content $env:GITHUB_ENV  "TOME_RELEASE_TAG=$tag"
+        Add-Content $env:GITHUB_OUTPUT "release_tag=$tag"
+        Write-Output "TOME_RELEASE_TAG = $tag"
+
+    # Reads gh-pages directory listing, strips non-version entries and the
+    # current tag, sorts remaining folders newest-first, and serialises to JSON.
+    - name: Resolve older versions
+      id: resolve_older
+      shell: pwsh
+      run: |
+        $olderVersions = @()
+
+        if ($env:HAS_GH_PAGES_BRANCH -eq "true") {
+          $exclude = @("assets", "main", $env:TOME_RELEASE_TAG, "v$($env:TOME_RELEASE_TAG)")
+          $entries = (git ls-tree --name-only origin/gh-pages 2>&1) -split "`n" |
+            Where-Object { ($_ -match "^\d" -or $_ -match "^v\d") -and $exclude -notcontains $_ }
+
+          $olderVersions = @($entries | Sort-Object {
+            $v = $_ -replace "^v", ""
+            $parts = $v -split "\."
+            while ($parts.Count -lt 4) { $parts += ,"0" }
+            try { [version]($parts[0..3] -join ".") } catch { [version]"0.0.0.0" }
+          } -Descending)
+        }
+
+        if ($olderVersions.Count -eq 0) {
+          $json = "[]"
+        } elseif ($olderVersions.Count -eq 1) {
+          $json = "[`"$($olderVersions[0])`"]"
+        } else {
+          $json = $olderVersions | ConvertTo-Json -Compress
+        }
+
+        Add-Content $env:GITHUB_ENV  "TOME_OLDER_VERSION=$json"
+        Add-Content $env:GITHUB_OUTPUT "older_versions=$json"
+        Write-Output "TOME_OLDER_VERSION = $json"
+        exit 0

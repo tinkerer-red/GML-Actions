@@ -1,0 +1,71 @@
+name: GameMaker Run
+description: >-
+  Internal helper. Locates Runner.exe and the compiled .win inside .gmcache,
+  runs the project, and captures all output to a log file. Reads GM_CACHE_PATH
+  from GITHUB_ENV (set by gm-compile). Any env vars the game process should
+  inherit (e.g. TOME_CI_MODE) must be written to GITHUB_ENV by the caller
+  before this action runs — they are automatically in scope for child processes.
+  Exports GM_RUNNER_LOG to GITHUB_ENV. Requires a windows-latest runner.
+author: Tinkerer_Red
+
+outputs:
+  runner-log:
+    description: "Absolute path to the captured runner output log."
+    value: ${{ steps.run.outputs.runner_log }}
+  exit-code:
+    description: "Exit code reported by the GameMaker runner process."
+    value: ${{ steps.run.outputs.exit_code }}
+
+runs:
+  using: composite
+  steps:
+
+    - name: Locate Runner.exe and .win file
+      shell: pwsh
+      run: |
+        $runnerItem = Get-ChildItem "$env:GM_CACHE_PATH\runtimes-gms2" `
+          -Filter "Runner.exe" -Recurse -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -like "*\Windows\x64\Runner.exe" } |
+          Sort-Object FullName -Descending |
+          Select-Object -First 1
+
+        if (-not $runnerItem) {
+          Write-Error "Runner.exe not found under $env:GM_CACHE_PATH\runtimes-gms2"
+          Write-Output "Directory listing (depth 5):"
+          Get-ChildItem $env:GM_CACHE_PATH -Recurse -Depth 5 -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+          exit 1
+        }
+
+        $winDir  = Join-Path $env:GM_CACHE_PATH "build-gms2-windows-VM\output"
+        $winItem = Get-ChildItem $winDir -Filter "*.win" -Recurse -ErrorAction SilentlyContinue |
+          Select-Object -First 1
+
+        if (-not $winItem) {
+          Write-Error ".win file not found under $winDir"
+          Write-Output "Directory listing (depth 5):"
+          Get-ChildItem $env:GM_CACHE_PATH -Recurse -Depth 5 -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+          exit 1
+        }
+
+        Add-Content $env:GITHUB_ENV "GM_RUNNER_EXE=$($runnerItem.FullName)"
+        Add-Content $env:GITHUB_ENV "GM_WIN_FILE=$($winItem.FullName)"
+        Write-Output "Runner : $($runnerItem.FullName)"
+        Write-Output "Win    : $($winItem.FullName)"
+
+    - name: Run project
+      id: run
+      shell: pwsh
+      run: |
+        $runnerLog = Join-Path $env:RUNNER_TEMP "runner.log"
+        Add-Content $env:GITHUB_ENV "GM_RUNNER_LOG=$runnerLog"
+
+        Write-Output "& `"$env:GM_RUNNER_EXE`" -game `"$env:GM_WIN_FILE`""
+        & $env:GM_RUNNER_EXE -game $env:GM_WIN_FILE 2>&1 | Tee-Object -FilePath $runnerLog
+        $exitCode = $LASTEXITCODE
+        Write-Output "Runner exited $exitCode"
+
+        Add-Content $env:GITHUB_ENV    "GM_RUNNER_EXIT_CODE=$exitCode"
+        Add-Content $env:GITHUB_OUTPUT "runner_log=$runnerLog"
+        Add-Content $env:GITHUB_OUTPUT "exit_code=$exitCode"

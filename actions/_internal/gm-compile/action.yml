@@ -1,9 +1,9 @@
 name: GameMaker Compile
 description: >-
   Internal helper. Sets up Node.js, auto-detects the .yyp, caches the
-  GameMaker runtime, and compiles via gm-cli. Exports GM_PROJECT_FILE,
-  GM_PROJECT_NAME, GM_PROJECT_DIRECTORY, and GM_CACHE_PATH to GITHUB_ENV for
-  downstream steps. Requires a windows-latest runner.
+  project-local GameMaker cache, and compiles via gm-cli. Exports
+  GM_PROJECT_FILE, GM_PROJECT_NAME, GM_PROJECT_DIRECTORY, and GM_CACHE_PATH to
+  GITHUB_ENV for downstream steps. Requires a windows-latest runner.
 author: Tinkerer_Red
 
 inputs:
@@ -13,6 +13,7 @@ inputs:
       searches recursively; fails if zero or more than one are found.
     required: false
     default: ""
+
   toolchain:
     description: "gm-cli toolchain version, e.g. GMS2@2024.14.3.260. Empty = latest."
     required: false
@@ -22,12 +23,15 @@ outputs:
   project-file:
     description: "Resolved absolute path to the .yyp."
     value: ${{ steps.resolve.outputs.project_file }}
+
   project-name:
     description: "Project filename without extension."
     value: ${{ steps.resolve.outputs.project_name }}
+
   project-directory:
     description: "Directory containing the .yyp."
     value: ${{ steps.resolve.outputs.project_directory }}
+
   gm-cache-path:
     description: "Project-local .gmcache directory path."
     value: ${{ steps.resolve.outputs.gm_cache_path }}
@@ -35,7 +39,6 @@ outputs:
 runs:
   using: composite
   steps:
-
     - name: Setup Node.js 24
       uses: actions/setup-node@v4
       with:
@@ -48,63 +51,77 @@ runs:
         INPUT_PROJECT_FILE: ${{ inputs.project-file }}
       run: |
         if ($env:INPUT_PROJECT_FILE -ne "") {
-          $item = Get-Item $env:INPUT_PROJECT_FILE -ErrorAction Stop
+          $_project_item = Get-Item $env:INPUT_PROJECT_FILE -ErrorAction Stop
         } else {
-          $items = @(Get-ChildItem -Filter "*.yyp" -Recurse -File)
-          if ($items.Count -eq 0) {
+          $_project_items = @(Get-ChildItem -Filter "*.yyp" -Recurse -File)
+
+          if ($_project_items.Count -eq 0) {
             Write-Error "No .yyp file found. Set the project-file input."
             exit 1
           }
-          if ($items.Count -gt 1) {
-            $list = ($items | ForEach-Object { "  " + $_.FullName }) -join "`n"
-            Write-Error "Multiple .yyp files found - set the project-file input:`n$list"
+
+          if ($_project_items.Count -gt 1) {
+            $_project_list = ($_project_items | ForEach-Object { "  " + $_.FullName }) -join "`n"
+            Write-Error "Multiple .yyp files found. Set the project-file input:`n$_project_list"
             exit 1
           }
-          $item = $items[0]
+
+          $_project_item = $_project_items[0]
         }
 
-        $projectFile = $item.FullName
-        $projectName = [IO.Path]::GetFileNameWithoutExtension($projectFile)
-        $projectDir  = [IO.Path]::GetDirectoryName($projectFile)
-        $gmCachePath = Join-Path $projectDir ".gmcache"
+        $_project_file = $_project_item.FullName
+        $_project_name = [IO.Path]::GetFileNameWithoutExtension($_project_file)
+        $_project_directory = [IO.Path]::GetDirectoryName($_project_file)
+        $_gm_cache_path = Join-Path $_project_directory ".gmcache"
 
-        Add-Content $env:GITHUB_ENV "GM_PROJECT_FILE=$projectFile"
-        Add-Content $env:GITHUB_ENV "GM_PROJECT_NAME=$projectName"
-        Add-Content $env:GITHUB_ENV "GM_PROJECT_DIRECTORY=$projectDir"
-        Add-Content $env:GITHUB_ENV "GM_CACHE_PATH=$gmCachePath"
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_FILE=$_project_file"
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_NAME=$_project_name"
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_DIRECTORY=$_project_directory"
+        Add-Content $env:GITHUB_ENV "GM_CACHE_PATH=$_gm_cache_path"
 
-        Add-Content $env:GITHUB_OUTPUT "project_file=$projectFile"
-        Add-Content $env:GITHUB_OUTPUT "project_name=$projectName"
-        Add-Content $env:GITHUB_OUTPUT "project_directory=$projectDir"
-        Add-Content $env:GITHUB_OUTPUT "gm_cache_path=$gmCachePath"
+        Add-Content $env:GITHUB_OUTPUT "project_file=$_project_file"
+        Add-Content $env:GITHUB_OUTPUT "project_name=$_project_name"
+        Add-Content $env:GITHUB_OUTPUT "project_directory=$_project_directory"
+        Add-Content $env:GITHUB_OUTPUT "gm_cache_path=$_gm_cache_path"
 
-        Write-Output "Project : $projectFile"
-        Write-Output "Cache   : $gmCachePath"
+        Write-Output "Project : $_project_file"
+        Write-Output "Cache   : $_gm_cache_path"
 
-    # Caching runtimes-gms2 avoids a full runtime download on cold runners.
-    # The key includes toolchain so different runtime versions cache separately.
-    - name: Cache GameMaker runtime
+    # Cache the full project-local .gmcache directory.
+    #
+    # Do not cache only runtimes-gms2. gm-cli expects .gmcache itself to be a
+    # valid cache root. Restoring only a subfolder creates .gmcache without the
+    # metadata gm-cli expects, causing:
+    #
+    #   The path '.gmcache' already exists but it's not a cache directory!
+    #
+    # The "full" key prefix intentionally avoids the old poisoned partial cache.
+    - name: Cache GameMaker cache
       uses: actions/cache@v5
       with:
-        path: ${{ steps.resolve.outputs.gm_cache_path }}/runtimes-gms2
-        key: gmcache-gms2-windows-vm-${{ inputs.toolchain || 'latest' }}
+        path: ${{ steps.resolve.outputs.gm_cache_path }}
+        key: gmcache-gms2-windows-vm-full-${{ inputs.toolchain || 'latest' }}
 
     - name: Compile with gm-cli
       shell: pwsh
       env:
         INPUT_TOOLCHAIN: ${{ inputs.toolchain }}
       run: |
-        $gm_args = @(
+        $_gm_args = @(
           "compile",
           $env:GM_PROJECT_FILE,
           "--target=windows",
           "--runtime=vm"
         )
+
         if ($env:INPUT_TOOLCHAIN -ne "") {
-          $gm_args += "--toolchain=$($env:INPUT_TOOLCHAIN)"
+          $_gm_args += "--toolchain=$($env:INPUT_TOOLCHAIN)"
         }
-        Write-Output "npx @gamemaker/gm-cli@latest $($gm_args -join ' ')"
-        npx "@gamemaker/gm-cli@latest" @gm_args
+
+        Write-Output "npx @gamemaker/gm-cli@latest $($_gm_args -join ' ')"
+
+        npx "@gamemaker/gm-cli@latest" @_gm_args
+
         if ($LASTEXITCODE -ne 0) {
           Write-Error "gm-cli compile failed (exit $LASTEXITCODE)"
           exit $LASTEXITCODE

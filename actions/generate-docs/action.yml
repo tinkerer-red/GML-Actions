@@ -68,14 +68,14 @@ runs:
 
     # ── Compile ────────────────────────────────────────────────────────────
     # Sets GM_PROJECT_FILE, GM_PROJECT_NAME, GM_PROJECT_DIRECTORY, GM_CACHE_PATH
-    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-compile@v2.1.1
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-compile@v2.1.2
       with:
         project-file: ${{ inputs.project-file }}
         toolchain:    ${{ inputs.toolchain }}
 
     # ── Docs metadata ─────────────────────────────────────────────────────
     # Sets TOME_RELEASE_TAG, TOME_OLDER_VERSION, HAS_GH_PAGES_BRANCH
-    - uses: tinkerer-red/GML-Actions/actions/_internal/resolve-docs-meta@v2.1.1
+    - uses: tinkerer-red/GML-Actions/actions/_internal/resolve-docs-meta@v2.1.2
       id: meta
       with:
         release-tag: ${{ inputs.release-tag }}
@@ -102,7 +102,7 @@ runs:
     # ── Run ────────────────────────────────────────────────────────────────
     # Sets GM_RUNNER_LOG, GM_RUNNER_EXIT_CODE. All TOME_* vars are inherited
     # by the child process via GITHUB_ENV.
-    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-run@v2.1.1
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gm-run@v2.1.2
 
     # ── Diagnostic report ──────────────────────────────────────────────────
     # Runs unconditionally so artifacts are always produced. Parses the runner
@@ -119,8 +119,8 @@ runs:
         New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
         # Copy runner log into the diagnostics bundle
-        if ($env:GM_RUNNER_LOG -ne "" -and (Test-Path $env:GM_RUNNER_LOG)) {
-          Copy-Item $env:GM_RUNNER_LOG (Join-Path $logDir "runner.log") -Force
+        if (![string]::IsNullOrWhiteSpace($env:GM_RUNNER_LOG) -and (Test-Path $env:GM_RUNNER_LOG)) {
+        	Copy-Item $env:GM_RUNNER_LOG (Join-Path $logDir "runner.log") -Force
         }
         $runnerLogPath = Join-Path $logDir "runner.log"
 
@@ -217,7 +217,7 @@ runs:
       with:
         name: tome-diagnostics-${{ env.TOME_RELEASE_TAG }}
         path: |
-          ${{ env.TOME_LOG_DIR }}/
+          ${{ runner.temp }}/tome-diagnostics/
           **/.gmcache/build-gms2-windows-VM/output/
         if-no-files-found: warn
 
@@ -281,7 +281,7 @@ runs:
           Format-Table -AutoSize
 
     # ── Publish ────────────────────────────────────────────────────────────
-    - uses: tinkerer-red/GML-Actions/actions/_internal/gh-pages-publish@v2.1.1
+    - uses: tinkerer-red/GML-Actions/actions/_internal/gh-pages-publish@v2.1.2
       with:
         output-path: ${{ inputs.output-path }}
         release-tag: ${{ env.TOME_RELEASE_TAG }}

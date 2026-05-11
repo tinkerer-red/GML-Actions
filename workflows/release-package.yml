@@ -23,7 +23,7 @@ jobs:
 
       - uses: tinkerer-red/GML-Actions/actions/package@v2
         with:
-          project-file: "MyGame.yyp"
+          project-file: "MyLibrary.yyp"
           package-id: "MyLibrary"
           include-folders: "MyLibrary"
           package-name: ""

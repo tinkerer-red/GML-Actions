@@ -8,18 +8,17 @@ compose them in your own workflows.
 
 | Action | Path | Purpose |
 |---|---|---|
-| **GameMaker Package** | `actions/package` | Build a `.yymps` from a project subfolder, attach to release |
-| **Generate Docs** | `actions/generate-docs` | Compile project, run Tome to generate docs, publish to gh-pages |
-| **Release Notes - Header** | `actions/release-notes/header` | Append `# Release X:` + description placeholder + `---` to release body |
-| **Release Notes - Issues** | `actions/release-notes/issues` | Append "Issues Closed" section listing closing-keyword references |
-| **Release Notes - Commits** | `actions/release-notes/commits` | Append "Commits" section listing commits since previous tag |
+| **GameMaker Package** | [`actions/package`](actions/package/action.yml) | Build a `.yymps` from a project subfolder, attach to release |
+| **Release Notes - Header** | [`actions/release-notes/header`](actions/release-notes/header/action.yml) | Append `# Release X:` + description placeholder + `---` to release body |
+| **Release Notes - Issues** | [`actions/release-notes/issues`](actions/release-notes/issues/action.yml) | Append "Issues Closed" section listing closing-keyword references |
+| **Release Notes - Commits** | [`actions/release-notes/commits`](actions/release-notes/commits/action.yml) | Append "Commits" section listing commits since previous tag |
 
 `_internal/` actions are shared helpers called by the public actions above.
-Do not reference them directly — their contracts are unstable.
+Do not reference them directly, their contracts are unstable.
 
 ## Quick start
 
-We provide ready-made workflow files you can drop directly into your
+Provided are ready-made workflow files you can drop directly into your
 `.github/workflows/` folder. Download or copy the ones you want:
 
 | Workflow file | What it does |
@@ -31,7 +30,7 @@ We provide ready-made workflow files you can drop directly into your
 Both release workflows trigger on the same tag patterns so they run in parallel.
 Each can be re-run or disabled independently. Drop whichever ones you don't need.
 
-**Minimum setup** — edit the two required inputs in `release-package.yml`:
+**Minimum setup** : edit the required inputs in your imported workflow, as an example `release-package.yml`:
 
 ```yaml
 project-file: "MyGame.yyp"   # path to your .yyp
@@ -103,7 +102,6 @@ Pin to an exact version if you want immutability:
 ```
 
 Breaking changes only ship in new major versions (`v3`, `v4`, etc).
-
 When testing changes on an unpublished branch, remember that public action references such as `tinkerer-red/GML-Actions/actions/_internal/gm-compile@v2` resolve from the published `v2` tag. Update the floating tag or temporarily point test workflows at the branch/SHA that contains the new internal actions.
 
 ## Generate Docs action
@@ -213,29 +211,9 @@ GameMaker runner exit codes are not used because they are unreliable.
 
 ---
 
-## Repo layout
-
-```
-GML-Actions/
-├── actions/
-│   ├── package/                 # public: build & attach .yymps
 │   ├── generate-docs/           # public: compile, run Tome, publish gh-pages
-│   ├── release-notes/
-│   │   ├── header/              # public: H1 + description placeholder + ---
-│   │   ├── issues/              # public: "Issues Closed" section
-│   │   └── commits/             # public: "Commits" section
-│   └── _internal/               # shared helpers - not for direct use
 │       ├── gm-compile/          # Node setup, .yyp detection, cache, gm-cli compile
 │       ├── gm-run/              # locate Runner.exe + .win, run, capture log
 │       ├── gh-pages-publish/    # overlay output dir onto gh-pages branch
 │       ├── resolve-docs-meta/   # resolve version tag + older-versions JSON
-│       ├── setup-project-tool/
-│       ├── parse-version/
-│       └── git-range/
-├── workflows/                   # ready-made consumer workflow files
-│   ├── release-package.yml
-│   ├── release-notes.yml
 │   └── generate-docs.yml
-└── .github/workflows/
-    └── tag-major.yml            # maintains the floating v2 tag
-```

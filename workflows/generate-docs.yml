@@ -18,7 +18,7 @@ on:
       release_tag:
         description: >-
           Docs version to generate. Leave empty to refresh the current version
-          from gh-pages (avoids creating a "main/" folder).
+          from gh-pages
         required: false
         default: ""
 

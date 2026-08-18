@@ -103,6 +103,10 @@ jobs:
           # Without this gm-cli uses a guest licence and the asset compiler
           # refuses to run.
           access-key: ${{ secrets.GAMEMAKER_ACCESS_KEY }}
+          # The runtime's BaseProject wants io.gamemaker.sdfshaders, which
+          # PREFABS RESTORE will not fetch because the project never asks
+          # for it. Vendored copy lives in the repo.
+          prefabs-path: ".ci/prefabs"
           # Standard runners have ~7 GB RAM; the asset compiler needs more
           # commit than that while writing texture and audio chunks.
           pagefile-gb: "16"

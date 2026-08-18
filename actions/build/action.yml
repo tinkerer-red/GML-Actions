@@ -90,6 +90,16 @@ inputs:
       side of the build. Turn on while diagnosing a failing build.
     required: false
     default: "false"
+  prefabs-path:
+    description: >-
+      Directory holding prefab folders to seed the build cache with, relative
+      to the repo root. Needed when the runtime's BaseProject pulls in a
+      prefab that the project itself does not declare - PREFABS RESTORE only
+      scans the project, so it reports nothing to fetch while the asset
+      compiler still fails on it. Copy the folders out of
+      ProgramData/GameMakerStudio2-*/Prefabs on a working machine.
+    required: false
+    default: ""
   pagefile-gb:
     description: >-
       Size in GB of the pagefile to configure before building. GitHub's
@@ -277,6 +287,27 @@ runs:
             @{n = "FreeGB";  e = { [math]::Round($_.Free  / 1GB, 2) }} |
           Format-Table -AutoSize
 
+    # ── Prefabs ────────────────────────────────────────────────────────────
+    # Seeded before the build so the asset compiler finds them on the first
+    # pass. gm-cli overwrites nothing here; it only adds what it fetches.
+    - name: Seed prefabs
+      if: inputs.prefabs-path != ''
+      shell: pwsh
+      env:
+        INPUT_PREFABS_PATH: ${{ inputs.prefabs-path }}
+      run: |
+        if (!(Test-Path $env:INPUT_PREFABS_PATH)) {
+          Write-Error "prefabs-path does not exist: $($env:INPUT_PREFABS_PATH)"
+          exit 1
+        }
+
+        $_prefabs_dir = Join-Path $env:GM_CACHE_PATH "prefabs"
+        New-Item -ItemType Directory -Force -Path $_prefabs_dir | Out-Null
+        Copy-Item (Join-Path $env:INPUT_PREFABS_PATH "*") $_prefabs_dir -Recurse -Force
+
+        Write-Output "Seeded prefabs into $_prefabs_dir"
+        Get-ChildItem $_prefabs_dir -Directory | Select-Object -ExpandProperty Name
+
     # ── Build ──────────────────────────────────────────────────────────────
     # gm-cli restores prefabs without a package tool, so any prefab the
     # project needs but the machine lacks is reported as missing rather than
@@ -345,15 +376,27 @@ runs:
           $_prefabs_dir = Join-Path $env:GM_CACHE_PATH "prefabs"
           New-Item -ItemType Directory -Force -Path $_prefabs_dir | Out-Null
 
-          & $_project_tool.FullName PREFABS RESTORE `
+          $_restore = & $_project_tool.FullName PREFABS RESTORE `
             "SOURCE=$($env:GM_PROJECT_FILE)" `
             "PACKAGETOOL=$($_package_tool.FullName)" `
             "GMPM_DLL=$($_gmpm_dll.FullName)" `
-            "PREFABSFOLDER=$_prefabs_dir"
+            "PREFABSFOLDER=$_prefabs_dir" 2>&1 | Tee-Object -Variable _restore
 
           if ($LASTEXITCODE -ne 0) {
             Write-Error "PREFABS RESTORE failed (exit $LASTEXITCODE)."
             exit $LASTEXITCODE
+          }
+
+          # RESTORE only inspects the project. A prefab required by the
+          # runtime's BaseProject leaves it with nothing to do, and a rebuild
+          # would fail identically - so bail out with the real fix instead of
+          # burning another full compile.
+          if (($_restore -join "`n") -match "No Missing Prefabs") {
+            Write-Error ("PREFABS RESTORE found nothing to fetch, but the compiler still reports a missing prefab. " +
+              "It is required by the runtime BaseProject rather than by this project. " +
+              "Copy the prefab folder from ProgramData/GameMakerStudio2-*/Prefabs on a working machine into the repo " +
+              "and pass it as the prefabs-path input.")
+            exit 1
           }
 
           Write-Output "Prefabs restored. Rebuilding."

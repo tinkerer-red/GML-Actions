@@ -109,6 +109,89 @@ Split the two across runners: `build` needs `windows-latest`, `steam-upload`
 runs on `ubuntu-latest`. The provided workflows already do this, passing the
 build between jobs as an artifact.
 
+### Licence
+
+`gm-cli` assigns a guest licence when no account is configured, and the guest
+licence cannot execute GMAssetCompiler. The build fails with:
+
+```text
+Permission Error : Unable to obtain permission to execute
+GMAssetCompiler.dll exited with non-zero status (-1)
+```
+
+Despite the wording this is a licensing refusal, not a file permission
+problem. Issue an access key at https://gamemaker.io/en/account/access-keys,
+store it as a secret, and pass it to `actions/build`:
+
+```yaml
+access-key: ${{ secrets.GAMEMAKER_ACCESS_KEY }}
+```
+
+`actions/build` warns when neither `access-key` nor `license-file` is set,
+rather than letting the build fail a minute later with the message above.
+
+### Prefabs
+
+Prefabs are how GameMaker 2026 ships the room editor filters and effects, the
+SDF font shaders, and the Prefab Library. They live outside the project, in
+`ProgramData/GameMakerStudio2-*/Prefabs`, so a fresh runner has none of them.
+
+A missing prefab produces a build that looks like a crash and is not one:
+
+```text
+Project Error : Missing Prefab = io.gamemaker.sdfshaders
+...
+Stats : GMA : Elapsed=176295.8625
+GMAssetCompiler.dll exited with non-zero status (-1)
+```
+
+The compiler records the error, finishes writing every chunk, prints its
+stats, and only then exits non-zero. There is no crash dump, no event log
+entry and no compiler log, because nothing crashed. Grep the output for
+`Project Error` to find the real cause. A shader count lower than a local
+build (`sh=45` against `sh=48`) is the same signal.
+
+There are two cases, and they need different fixes.
+
+**The project asks for the prefab.** `actions/build` recovers on its own. It
+runs `ProjectTool PREFABS RESTORE` with `PACKAGETOOL` and `GMPM_DLL` set, so
+the prefab is downloaded rather than merely reported, then it builds again.
+Only cold builds pay for the retry, since `.gmcache` carries the prefab
+afterwards.
+
+**The runtime's BaseProject asks for the prefab.** `PREFABS RESTORE` only
+inspects your project, so it reports `No Missing Prefabs!` while the compiler
+keeps failing. `io.gamemaker.sdfshaders` behaves this way, and it is pulled in
+whether or not your fonts use SDF. Copy the folder out of
+`ProgramData/GameMakerStudio2-*/Prefabs` on a machine that builds, commit it,
+and point the action at it:
+
+```yaml
+prefabs-path: ".ci/prefabs"
+```
+
+The folder is seeded into the build cache before the first compile. The
+sdfshaders prefab is 13 files and about 10 KB.
+
+### Runner memory
+
+Standard Windows runners have around 7 GB of RAM and a small pagefile. A
+texture heavy project can exhaust the commit limit part-way through writing
+chunks, and the asset compiler dies the same quiet way a missing prefab does.
+Raising the pagefile is cheaper than moving to a larger runner:
+
+```yaml
+pagefile-gb: "16"
+```
+
+### Known gap
+
+`actions/generate-docs` compiles through `_internal/gm-compile`, which has
+neither the access key nor the prefab handling described above. Docs builds
+against a 2026 runtime will hit the guest licence error first and the missing
+prefab error after it. Pin an older toolchain, or use `actions/build` until
+this is addressed.
+
 ### Secrets
 
 | Secret | What it is |

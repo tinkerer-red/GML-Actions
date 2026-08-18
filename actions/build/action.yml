@@ -278,6 +278,16 @@ runs:
           Format-Table -AutoSize
 
     # ── Build ──────────────────────────────────────────────────────────────
+    # gm-cli restores prefabs without a package tool, so any prefab the
+    # project needs but the machine lacks is reported as missing rather than
+    # downloaded. The asset compiler then finishes the whole build and exits
+    # non-zero with no crash and no log, because an error was recorded.
+    # See https://github.com/YoYoGames/GameMaker-Bugs/issues/13009
+    #
+    # The recovery is to run PREFABS RESTORE with PACKAGETOOL and GMPM_DLL
+    # pointed at the copies gm-cli has already downloaded, then build again.
+    # Only the first cold build pays for this; .gmcache carries the prefabs
+    # afterwards.
     - name: Package with gm-cli
       id: build
       shell: pwsh
@@ -313,11 +323,47 @@ runs:
 
         Write-Output "npx @gamemaker/gm-cli@latest $($_gm_args -join ' ')"
 
-        npx "@gamemaker/gm-cli@latest" @_gm_args
+        $_output = npx "@gamemaker/gm-cli@latest" @_gm_args 2>&1 | Tee-Object -Variable _captured
+        $_exit_code = $LASTEXITCODE
+        $_captured | Write-Output
 
-        if ($LASTEXITCODE -ne 0) {
-          Write-Error "gm-cli package failed (exit $LASTEXITCODE)"
-          exit $LASTEXITCODE
+        if ($_exit_code -ne 0 -and ($_captured -join "`n") -match "Missing Prefab") {
+          Write-Output "::warning::Build reported a missing prefab. Restoring prefabs and retrying."
+
+          $_project_tool = Get-ChildItem $env:GM_CACHE_PATH -Recurse -File -Filter "ProjectTool.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $_package_tool = Get-ChildItem $env:GM_CACHE_PATH -Recurse -File -Filter "PackageTool.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $_gmpm_dll     = Get-ChildItem $env:GM_CACHE_PATH -Recurse -File -Filter "gmpm.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+          if (-not $_project_tool -or -not $_package_tool -or -not $_gmpm_dll) {
+            Write-Output "ProjectTool : $($_project_tool.FullName)"
+            Write-Output "PackageTool : $($_package_tool.FullName)"
+            Write-Output "gmpm.dll    : $($_gmpm_dll.FullName)"
+            Write-Error "Cannot restore prefabs - gm-cli's tools were not found under $env:GM_CACHE_PATH."
+            exit 1
+          }
+
+          $_prefabs_dir = Join-Path $env:GM_CACHE_PATH "prefabs"
+          New-Item -ItemType Directory -Force -Path $_prefabs_dir | Out-Null
+
+          & $_project_tool.FullName PREFABS RESTORE `
+            "SOURCE=$($env:GM_PROJECT_FILE)" `
+            "PACKAGETOOL=$($_package_tool.FullName)" `
+            "GMPM_DLL=$($_gmpm_dll.FullName)" `
+            "PREFABSFOLDER=$_prefabs_dir"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "PREFABS RESTORE failed (exit $LASTEXITCODE)."
+            exit $LASTEXITCODE
+          }
+
+          Write-Output "Prefabs restored. Rebuilding."
+          npx "@gamemaker/gm-cli@latest" @_gm_args
+          $_exit_code = $LASTEXITCODE
+        }
+
+        if ($_exit_code -ne 0) {
+          Write-Error "gm-cli package failed (exit $_exit_code)"
+          exit $_exit_code
         }
 
         # gm-cli has been seen to exit 0 after a failed asset compile, so the

@@ -349,6 +349,42 @@ runs:
           }
         }
 
+        # GMAssetCompiler can die without writing a log of its own. When it
+        # does, Windows still records the exception, so the event log is the
+        # only place the real cause shows up.
+        Write-Output "=== windows error events (last 30 min) ==="
+        $_events_path = Join-Path $_log_dir "windows-error-events.txt"
+        try {
+          $_events = Get-WinEvent -FilterHashtable @{
+            LogName   = "Application"
+            StartTime = (Get-Date).AddMinutes(-30)
+          } -ErrorAction Stop |
+            Where-Object { $_.ProviderName -match "Application Error|\.NET Runtime|Windows Error Reporting" }
+
+          if ($_events) {
+            $_events | Format-List TimeCreated, ProviderName, Id, Message |
+              Out-File $_events_path -Encoding utf8
+            Get-Content $_events_path | Select-Object -First 120 | Write-Output
+          } else {
+            "No Application Error / .NET Runtime events in the last 30 minutes." |
+              Tee-Object -FilePath $_events_path
+          }
+        } catch {
+          "Could not read the Application event log: $_" | Tee-Object -FilePath $_events_path
+        }
+
+        Write-Output "=== crash dumps ==="
+        $_dump_dir = Join-Path $env:LOCALAPPDATA "CrashDumps"
+        if (Test-Path $_dump_dir) {
+          Get-ChildItem $_dump_dir -File | Select-Object Name, Length | Format-Table -AutoSize
+        } else {
+          Write-Output "no CrashDumps directory"
+        }
+
+        Write-Output "=== memory ==="
+        $_os = Get-CimInstance Win32_OperatingSystem
+        Write-Output "total: $([math]::Round($_os.TotalVisibleMemorySize / 1MB, 2)) GB, free: $([math]::Round($_os.FreePhysicalMemory / 1MB, 2)) GB"
+
         Write-Output "=== collected ==="
         Get-ChildItem $_log_dir -File | Select-Object Name, Length | Format-Table -AutoSize
 

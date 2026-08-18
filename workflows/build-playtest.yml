@@ -1,0 +1,141 @@
+name: Playtest Build
+
+# Tier 2 of 3 - playtester + dev build, made from every version tag.
+# Publishes: GitHub pre-release (private repo) + Steam branch "playtest"
+# on the Playtest appid. Not the public release.
+
+on:
+  push:
+    tags:
+      # Both cases, because past tags used "V0.16b" as often as "v0.15d".
+      - "[0-9]*.[0-9]*"
+      - "v[0-9]*.[0-9]*"
+      - "V[0-9]*.[0-9]*"
+  workflow_dispatch:
+    inputs:
+      version-label:
+        description: "Version label to build with (defaults to the short sha)."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+# Tags are independent releases - let them queue rather than cancel.
+concurrency:
+  group: playtest-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      artifact-name: ${{ steps.build.outputs.artifact-name }}
+      version-label: ${{ steps.build.outputs.version-label }}
+      steam-ready: ${{ steps.gate.outputs.steam }}
+    steps:
+      # ── Guard ────────────────────────────────────────────────────────────
+      # The game is pre-release. A public repo would make these builds and
+      # their release pages downloadable by anyone.
+      - name: Require private repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          _visibility=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .visibility)
+          echo "repository visibility: ${_visibility}"
+          if [ "${_visibility}" != "private" ]; then
+            echo "refusing to build: this repo is '${_visibility}'. Pre-release builds must stay private."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version label
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION_LABEL: ${{ inputs.version-label }}
+        run: |
+          if [ -n "${INPUT_VERSION_LABEL}" ]; then
+            _label="${INPUT_VERSION_LABEL}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            _label="${GITHUB_REF_NAME}"
+          else
+            _label="${GITHUB_SHA:0:7}"
+          fi
+          echo "label=${_label}" >> "${GITHUB_OUTPUT}"
+          echo "building ${_label}"
+
+      - name: Build
+        id: build
+        uses: tinkerer-red/GML-Actions/actions/build@v2
+        with:
+          project-file: "MyGame.yyp"
+          config: "Release"
+          target: "windows"
+          runtime: "vm"
+          # Pinned to the LTS 2026 line so CI cannot drift onto a monthly
+          # release the project was never opened in.
+          toolchain: "GMS2@2026.0"
+          version-label: ${{ steps.version.outputs.label }}
+          artifact-retention-days: "90"
+
+      # ── GitHub ───────────────────────────────────────────────────────────
+      # Marked prerelease so nothing here reads as a shipped version, and it
+      # is only visible to people with access to this private repo.
+      - name: Publish GitHub pre-release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.build.outputs.package-path }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Private playtest build `${{ steps.build.outputs.version-label }}`.
+
+            Not a public release. Steam: `playtest` branch on the Playtest app.
+
+      - name: Check Steam credentials
+        id: gate
+        shell: bash
+        env:
+          STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+          STEAM_CONFIG_VDF: ${{ secrets.STEAM_CONFIG_VDF }}
+        run: |
+          if [ -n "${STEAM_USERNAME}" ] && [ -n "${STEAM_CONFIG_VDF}" ]; then
+            echo "steam=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "steam=false" >> "${GITHUB_OUTPUT}"
+            echo "Steam secrets missing - upload will be skipped." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+  steam:
+    needs: build
+    if: needs.build.outputs.steam-ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: build
+
+      - name: Locate zip
+        id: zip
+        shell: bash
+        run: echo "path=$(find build -name '*.zip' | head -n 1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload to Steam
+        uses: tinkerer-red/GML-Actions/actions/steam-upload@v2
+        with:
+          app-id: ${{ vars.STEAM_APP_ID }}  # repo variable, not a secret
+          depot-id: ${{ vars.STEAM_PLAYTEST_DEPOT_ID }}
+          content-zip: ${{ steps.zip.outputs.path }}
+          branch: "playtest"
+          build-description: "playtest ${{ needs.build.outputs.version-label }}"
+          steam-username: ${{ secrets.STEAM_USERNAME }}
+          steam-config-vdf: ${{ secrets.STEAM_CONFIG_VDF }}

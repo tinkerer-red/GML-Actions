@@ -1,0 +1,172 @@
+name: Stable Build
+
+# Tier 3 of 3 - release-candidate build. Manual trigger only; nothing about
+# this workflow fires on its own.
+# Publishes: Steam upload to the Playtest appid. Still not the public release.
+#
+# Build any ref you like: pick a branch or tag from the Run workflow dropdown,
+# or paste a commit sha into the "ref" input to pin an exact commit.
+#
+# Steam will not let SteamPipe set the default branch live, by design. So the
+# usual run leaves set-live-branch as "none": the build is uploaded, then a
+# human promotes it onto default in Steamworks > App Admin > Builds. Any other
+# value must name a branch that already exists on the Playtest app, such as
+# "developer", or a "stable" branch if you create one later.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit sha, tag or branch to build. Empty uses the ref picked in the Run workflow dropdown."
+        required: false
+        default: ""
+      version-label:
+        description: "Version label for this build, e.g. 1.4.0-rc1. Defaults to the short sha."
+        required: false
+        default: ""
+      set-live-branch:
+        description: "Steam branch to set live: 'none', or an existing branch such as 'developer'. Steam forbids setting 'default' live from CI."
+        required: true
+        default: "none"
+      build-description:
+        description: "Description shown in the Steamworks build list."
+        required: false
+        default: ""
+      github-release:
+        description: "Also publish a GitHub pre-release with the zip attached."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      artifact-name: ${{ steps.build.outputs.artifact-name }}
+      version-label: ${{ steps.build.outputs.version-label }}
+      steam-ready: ${{ steps.gate.outputs.steam }}
+    steps:
+      # ── Guard ────────────────────────────────────────────────────────────
+      - name: Require private repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          _visibility=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .visibility)
+          echo "repository visibility: ${_visibility}"
+          if [ "${_visibility}" != "private" ]; then
+            echo "refusing to build: this repo is '${_visibility}'. Pre-release builds must stay private."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Empty falls back to the ref this run was dispatched against.
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Resolve version label
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION_LABEL: ${{ inputs.version-label }}
+        run: |
+          if [ -n "${INPUT_VERSION_LABEL}" ]; then
+            _label="${INPUT_VERSION_LABEL}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            _label="${GITHUB_REF_NAME}"
+          else
+            _label="stable-${GITHUB_SHA:0:7}"
+          fi
+          echo "label=${_label}" >> "${GITHUB_OUTPUT}"
+          echo "building ${_label} from ${GITHUB_REF_NAME}"
+
+      - name: Build
+        id: build
+        uses: tinkerer-red/GML-Actions/actions/build@v2
+        with:
+          project-file: "MyGame.yyp"
+          config: "Release"
+          target: "windows"
+          runtime: "vm"
+          # Pinned to the LTS 2026 line so CI cannot drift onto a monthly
+          # release the project was never opened in.
+          toolchain: "GMS2@2026.0"
+          version-label: ${{ steps.version.outputs.label }}
+          artifact-retention-days: "90"
+
+      - name: Publish GitHub pre-release
+        if: inputs.github-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.build.outputs.version-label }}
+          files: ${{ steps.build.outputs.package-path }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Private stable candidate `${{ steps.build.outputs.version-label }}`.
+
+            Not a public release.
+
+      - name: Check Steam credentials
+        id: gate
+        shell: bash
+        env:
+          STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+          STEAM_CONFIG_VDF: ${{ secrets.STEAM_CONFIG_VDF }}
+        run: |
+          if [ -n "${STEAM_USERNAME}" ] && [ -n "${STEAM_CONFIG_VDF}" ]; then
+            echo "steam=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "steam=false" >> "${GITHUB_OUTPUT}"
+            echo "Steam secrets missing - upload will be skipped." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+  steam:
+    needs: build
+    if: needs.build.outputs.steam-ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: build
+
+      - name: Locate zip
+        id: zip
+        shell: bash
+        run: echo "path=$(find build -name '*.zip' | head -n 1)" >> "${GITHUB_OUTPUT}"
+
+      # "none" is mapped to an empty branch, which uploads without setting
+      # anything live.
+      - name: Resolve Steam branch
+        id: branch
+        shell: bash
+        env:
+          INPUT_SET_LIVE_BRANCH: ${{ inputs.set-live-branch }}
+        run: |
+          if [ "${INPUT_SET_LIVE_BRANCH}" = "none" ]; then
+            echo "branch=" >> "${GITHUB_OUTPUT}"
+          else
+            echo "branch=${INPUT_SET_LIVE_BRANCH}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Upload to Steam
+        uses: tinkerer-red/GML-Actions/actions/steam-upload@v2
+        with:
+          app-id: ${{ vars.STEAM_APP_ID }}  # repo variable, not a secret
+          depot-id: ${{ vars.STEAM_PLAYTEST_DEPOT_ID }}
+          content-zip: ${{ steps.zip.outputs.path }}
+          branch: ${{ steps.branch.outputs.branch }}
+          build-description: ${{ inputs.build-description || format('stable {0}', needs.build.outputs.version-label) }}
+          steam-username: ${{ secrets.STEAM_USERNAME }}
+          steam-config-vdf: ${{ secrets.STEAM_CONFIG_VDF }}

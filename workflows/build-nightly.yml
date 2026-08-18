@@ -1,0 +1,165 @@
+name: Nightly Build
+
+# Tier 1 of 3 - dev-only build, cut once a day from main.
+# Publishes: workflow artifact (GitHub) + Steam branch "nightly" (Playtest appid).
+# Never touches the base game appid and never touches a public branch.
+#
+# Skips itself when Master has not moved since the last successful nightly, so
+# a quiet day costs nothing.
+#
+# GitHub only ever fires scheduled workflows from the repo's DEFAULT branch, so
+# this file has to live on main even though the code it builds lives on Master.
+# That is why the checkout below names Master explicitly.
+
+on:
+  schedule:
+    # 07:00 UTC daily. Cron here is always UTC; GitHub does not apply DST.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  # ── Change check ─────────────────────────────────────────────────────────
+  # Asks whether Master picked up commits since the last successful nightly
+  # finished. Timestamps rather than shas, because this run's own sha belongs
+  # to main (the default branch), not to Master.
+  # Manual runs always build. Cheap ubuntu job, no checkout.
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should-build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Any new commits since the last nightly?
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRUNK_BRANCH: "main"
+        run: |
+          if [ "${EVENT_NAME}" != "schedule" ]; then
+            echo "manual run - building regardless of commit history."
+            echo "should_build=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Filename is the workflow's own identifier in the API. Rename this
+          # file and this path has to change with it.
+          _last_run_at=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-nightly.yml/runs?status=success&per_page=1" \
+            --jq '.workflow_runs[0].created_at // ""')
+
+          if [ -z "${_last_run_at}" ]; then
+            echo "no successful nightly on record - building."
+            echo "should_build=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          _new_commits=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits?sha=${TRUNK_BRANCH}&since=${_last_run_at}&per_page=1" \
+            --jq 'length')
+
+          echo "last successful nightly            : ${_last_run_at}"
+          echo "new commits on ${TRUNK_BRANCH} since : ${_new_commits}"
+
+          if [ "${_new_commits}" -eq 0 ]; then
+            echo "should_build=false" >> "${GITHUB_OUTPUT}"
+            echo "No new commits on ${TRUNK_BRANCH} since the last nightly - build skipped." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "should_build=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should-build == 'true'
+    runs-on: windows-latest
+    outputs:
+      artifact-name: ${{ steps.build.outputs.artifact-name }}
+      version-label: ${{ steps.build.outputs.version-label }}
+      steam-ready: ${{ steps.gate.outputs.steam }}
+    steps:
+      # ── Guard ────────────────────────────────────────────────────────────
+      # The game is pre-release. If this repo ever goes public, build
+      # artifacts become downloadable by anyone - stop before that happens.
+      - name: Require private repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          _visibility=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .visibility)
+          echo "repository visibility: ${_visibility}"
+          if [ "${_visibility}" != "private" ]; then
+            echo "refusing to build: this repo is '${_visibility}'. Pre-release builds must stay private."
+            exit 1
+          fi
+
+      # Scheduled runs start on the default branch, so the trunk is named here
+      # explicitly or the nightly would build the wrong code.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: "main"
+
+      - name: Build
+        id: build
+        uses: tinkerer-red/GML-Actions/actions/build@v2
+        with:
+          project-file: "MyGame.yyp"
+          config: "Release"
+          target: "windows"
+          runtime: "vm"
+          # Pinned to the LTS 2026 line so CI cannot drift onto a monthly
+          # release the project was never opened in.
+          toolchain: "GMS2@2026.0"
+          version-label: "nightly-${{ github.run_number }}"
+          artifact-retention-days: "14"
+
+      # Secrets are unreadable from a job-level `if`, so the decision is made
+      # here and passed down as a job output.
+      - name: Check Steam credentials
+        id: gate
+        shell: bash
+        env:
+          STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+          STEAM_CONFIG_VDF: ${{ secrets.STEAM_CONFIG_VDF }}
+        run: |
+          if [ -n "${STEAM_USERNAME}" ] && [ -n "${STEAM_CONFIG_VDF}" ]; then
+            echo "steam=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "steam=false" >> "${GITHUB_OUTPUT}"
+            echo "Steam secrets missing - upload will be skipped." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+  steam:
+    needs: build
+    if: needs.build.outputs.steam-ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: build
+
+      - name: Locate zip
+        id: zip
+        shell: bash
+        run: echo "path=$(find build -name '*.zip' | head -n 1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload to Steam
+        uses: tinkerer-red/GML-Actions/actions/steam-upload@v2
+        with:
+          app-id: ${{ vars.STEAM_APP_ID }}  # repo variable, not a secret
+          depot-id: ${{ vars.STEAM_PLAYTEST_DEPOT_ID }}
+          content-zip: ${{ steps.zip.outputs.path }}
+          branch: "nightly"
+          build-description: "nightly ${{ needs.build.outputs.version-label }}"
+          steam-username: ${{ secrets.STEAM_USERNAME }}
+          steam-config-vdf: ${{ secrets.STEAM_CONFIG_VDF }}

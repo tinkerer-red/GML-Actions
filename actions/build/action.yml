@@ -1,0 +1,261 @@
+name: GameMaker Build
+description: >-
+  Package a GameMaker project into a distributable zip with gm-cli, then upload
+  it as a workflow artifact. Auto-detects the .yyp, caches the project-local
+  GameMaker cache, and stamps a version label into the filename. Requires a
+  windows-latest runner for windows targets.
+author: Tinkerer_Red
+
+branding:
+  icon: box
+  color: purple
+
+inputs:
+  # ----- project (optional) ------------------------------------------------
+  project-file:
+    description: >-
+      Path to the .yyp file relative to the repo root. If omitted the action
+      searches recursively for a single .yyp; fails if zero or more than one
+      are found.
+    required: false
+    default: ""
+
+  # ----- build (optional) --------------------------------------------------
+  config:
+    description: >-
+      GameMaker project config to build with, as named in the .yyp config
+      tree. "Default" is the root config.
+    required: false
+    default: "Default"
+  target:
+    description: "Platform to build for: windows, mac, linux, operagx, etc."
+    required: false
+    default: "windows"
+  runtime:
+    description: >-
+      "vm" for the interpreted runtime, "native" for ahead-of-time compilation
+      (YYC). native needs a full toolchain on the runner and is much slower.
+    required: false
+    default: "vm"
+  toolchain:
+    description: "gm-cli toolchain version, e.g. GMS2@2024.14.3.260. Empty = latest."
+    required: false
+    default: ""
+  license-file:
+    description: >-
+      Path to a GameMaker license .plist. Only needed for targets or runtimes
+      that require a licensed toolchain. Pass a path written from a secret,
+      never the license contents.
+    required: false
+    default: ""
+
+  # ----- output (optional) -------------------------------------------------
+  version-label:
+    description: >-
+      Version string stamped into the output filename, e.g. "1.4.2" or
+      "nightly-a1b2c3d". Empty falls back to the short commit sha.
+    required: false
+    default: ""
+  output-name:
+    description: >-
+      Full output filename. Empty builds "<project-name>-<version-label>.zip".
+    required: false
+    default: ""
+  artifact-name:
+    description: >-
+      Name of the uploaded workflow artifact. Empty uses the output filename
+      without its extension.
+    required: false
+    default: ""
+  upload-artifact:
+    description: 'When "true", upload the built zip as a workflow artifact.'
+    required: false
+    default: "true"
+  artifact-retention-days:
+    description: "Retention in days for the uploaded artifact."
+    required: false
+    default: "14"
+
+outputs:
+  package-path:
+    description: "Absolute path to the built zip."
+    value: ${{ steps.build.outputs.package_path }}
+  package-filename:
+    description: "Filename of the built zip."
+    value: ${{ steps.name.outputs.output_name }}
+  version-label:
+    description: "Version label that was stamped into the filename."
+    value: ${{ steps.name.outputs.version_label }}
+  artifact-name:
+    description: "Name of the uploaded workflow artifact."
+    value: ${{ steps.name.outputs.artifact_name }}
+
+runs:
+  using: composite
+  steps:
+
+    # ── Toolchain ──────────────────────────────────────────────────────────
+    - name: Setup Node.js 24
+      uses: actions/setup-node@v4
+      with:
+        node-version: "24"
+
+    # ── Project ────────────────────────────────────────────────────────────
+    # Same resolution contract as _internal/gm-compile, so the two are
+    # interchangeable inside a workflow.
+    - name: Resolve project file
+      id: resolve
+      shell: pwsh
+      env:
+        INPUT_PROJECT_FILE: ${{ inputs.project-file }}
+      run: |
+        if ($env:INPUT_PROJECT_FILE -ne "") {
+          $_project_item = Get-Item $env:INPUT_PROJECT_FILE -ErrorAction Stop
+        } else {
+          $_project_items = @(Get-ChildItem -Filter "*.yyp" -Recurse -File)
+
+          if ($_project_items.Count -eq 0) {
+            Write-Error "No .yyp file found. Set the project-file input."
+            exit 1
+          }
+
+          if ($_project_items.Count -gt 1) {
+            $_project_list = ($_project_items | ForEach-Object { "  " + $_.FullName }) -join "`n"
+            Write-Error "Multiple .yyp files found. Set the project-file input:`n$_project_list"
+            exit 1
+          }
+
+          $_project_item = $_project_items[0]
+        }
+
+        $_project_file      = $_project_item.FullName
+        $_project_name      = [IO.Path]::GetFileNameWithoutExtension($_project_file)
+        $_project_directory = [IO.Path]::GetDirectoryName($_project_file)
+        $_gm_cache_path     = Join-Path $_project_directory ".gmcache"
+
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_FILE=$_project_file"
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_NAME=$_project_name"
+        Add-Content $env:GITHUB_ENV "GM_PROJECT_DIRECTORY=$_project_directory"
+        Add-Content $env:GITHUB_ENV "GM_CACHE_PATH=$_gm_cache_path"
+
+        Add-Content $env:GITHUB_OUTPUT "project_file=$_project_file"
+        Add-Content $env:GITHUB_OUTPUT "project_name=$_project_name"
+        Add-Content $env:GITHUB_OUTPUT "project_directory=$_project_directory"
+        Add-Content $env:GITHUB_OUTPUT "gm_cache_path=$_gm_cache_path"
+
+        Write-Output "Project : $_project_file"
+        Write-Output "Cache   : $_gm_cache_path"
+
+    # ── Naming ─────────────────────────────────────────────────────────────
+    # Version label falls back to the short sha so nightly builds stay
+    # distinguishable from each other in the artifact list.
+    - name: Resolve output name
+      id: name
+      shell: pwsh
+      env:
+        INPUT_VERSION_LABEL: ${{ inputs.version-label }}
+        INPUT_OUTPUT_NAME:   ${{ inputs.output-name }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: |
+        $_version_label = $env:INPUT_VERSION_LABEL
+        if ([string]::IsNullOrWhiteSpace($_version_label)) {
+          $_version_label = $env:GITHUB_SHA.Substring(0, 7)
+        }
+
+        $_output_name = $env:INPUT_OUTPUT_NAME
+        if ([string]::IsNullOrWhiteSpace($_output_name)) {
+          $_output_name = "$($env:GM_PROJECT_NAME)-$_version_label.zip"
+        }
+
+        # Artifact names, Steam paths and download URLs all dislike spaces
+        # and path separators - normalise once, here.
+        $_output_name = ($_output_name -replace '[\\/:*?"<>|]', '-') -replace '\s+', '-'
+
+        $_artifact_name = $env:INPUT_ARTIFACT_NAME
+        if ([string]::IsNullOrWhiteSpace($_artifact_name)) {
+          $_artifact_name = [IO.Path]::GetFileNameWithoutExtension($_output_name)
+        }
+
+        Add-Content $env:GITHUB_OUTPUT "version_label=$_version_label"
+        Add-Content $env:GITHUB_OUTPUT "output_name=$_output_name"
+        Add-Content $env:GITHUB_OUTPUT "artifact_name=$_artifact_name"
+
+        Write-Output "Version  : $_version_label"
+        Write-Output "Output   : $_output_name"
+        Write-Output "Artifact : $_artifact_name"
+
+    # ── Cache ──────────────────────────────────────────────────────────────
+    # Keyed on everything that changes what lands in .gmcache. A cache shared
+    # across configs silently produces the wrong build.
+    - name: Cache GameMaker cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ steps.resolve.outputs.gm_cache_path }}
+        key: gmcache-${{ inputs.target }}-${{ inputs.runtime }}-${{ inputs.config }}-${{ inputs.toolchain || 'latest' }}
+
+    # ── Build ──────────────────────────────────────────────────────────────
+    - name: Package with gm-cli
+      id: build
+      shell: pwsh
+      env:
+        INPUT_CONFIG:       ${{ inputs.config }}
+        INPUT_TARGET:       ${{ inputs.target }}
+        INPUT_RUNTIME:      ${{ inputs.runtime }}
+        INPUT_TOOLCHAIN:    ${{ inputs.toolchain }}
+        INPUT_LICENSE_FILE: ${{ inputs.license-file }}
+        OUTPUT_NAME:        ${{ steps.name.outputs.output_name }}
+      run: |
+        $_output_path = Join-Path $env:RUNNER_TEMP $env:OUTPUT_NAME
+
+        $_gm_args = @(
+          "package",
+          $env:GM_PROJECT_FILE,
+          "--target=$($env:INPUT_TARGET)",
+          "--runtime=$($env:INPUT_RUNTIME)",
+          "--config=$($env:INPUT_CONFIG)",
+          "--output=$_output_path"
+        )
+
+        if ($env:INPUT_TOOLCHAIN -ne "") {
+          $_gm_args += "--toolchain=$($env:INPUT_TOOLCHAIN)"
+        }
+        if ($env:INPUT_LICENSE_FILE -ne "") {
+          $_gm_args += "--license=$($env:INPUT_LICENSE_FILE)"
+        }
+
+        Write-Output "npx @gamemaker/gm-cli@latest $($_gm_args -join ' ')"
+
+        npx "@gamemaker/gm-cli@latest" @_gm_args
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "gm-cli package failed (exit $LASTEXITCODE)"
+          exit $LASTEXITCODE
+        }
+
+        # gm-cli has been seen to exit 0 after a failed asset compile, so the
+        # output is checked for existence and plausible size.
+        if (!(Test-Path $_output_path)) {
+          Write-Error "gm-cli reported success but no package exists at $_output_path"
+          exit 1
+        }
+
+        $_size = (Get-Item $_output_path).Length
+        if ($_size -lt 1024) {
+          Write-Error "Package at $_output_path is only $_size bytes - the build produced nothing usable."
+          exit 1
+        }
+
+        Add-Content $env:GITHUB_ENV    "GM_PACKAGE_PATH=$_output_path"
+        Add-Content $env:GITHUB_OUTPUT "package_path=$_output_path"
+
+        Write-Output "Built $_output_path ($([math]::Round($_size / 1MB, 2)) MB)"
+
+    # ── Artifact ───────────────────────────────────────────────────────────
+    - name: Upload build artifact
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.name.outputs.artifact_name }}
+        path: ${{ steps.build.outputs.package_path }}
+        retention-days: ${{ inputs.artifact-retention-days }}
+        if-no-files-found: error

@@ -1,0 +1,233 @@
+name: Steam Upload
+description: >-
+  Upload a build to Steam via SteamPipe and optionally set it live on a
+  private beta branch. Refuses to publish to the public default branch.
+  Accepts either a content directory or a zip to extract. Requires an
+  ubuntu-latest runner.
+author: Tinkerer_Red
+
+branding:
+  icon: upload-cloud
+  color: purple
+
+inputs:
+  # ----- app (required) ----------------------------------------------------
+  app-id:
+    description: "Steam appid to upload to. For playtest builds this is the Playtest appid, not the base game."
+    required: true
+
+  # ----- content (one of these is required) --------------------------------
+  content-root:
+    description: >-
+      Directory whose contents become the depot. Mutually exclusive with
+      content-zip.
+    required: false
+    default: ""
+  content-zip:
+    description: >-
+      Zip to extract and upload. Mutually exclusive with content-root.
+      Use this to feed a zip built by actions/build straight into SteamPipe.
+    required: false
+    default: ""
+
+  # ----- depot (optional) --------------------------------------------------
+  depot-id:
+    description: >-
+      Depot to upload into. Empty uses appid + 1, which is the depot Steam
+      creates by default for a new app.
+    required: false
+    default: ""
+
+  # ----- branch (optional) -------------------------------------------------
+  branch:
+    description: >-
+      Beta branch to set live, e.g. "nightly" or "playtest". Empty uploads the
+      build without setting it live anywhere - use that for builds a human
+      must promote by hand in App Admin. The branch must already exist in
+      Steamworks; SteamPipe will not create it.
+    required: false
+    default: ""
+  allow-public-branch:
+    description: >-
+      Guard rail. The default branch is the one every owner of the app sees,
+      and SteamPipe refuses to set it live anyway. Set to "true" only if you
+      genuinely intend a public-facing branch name.
+    required: false
+    default: "false"
+  build-description:
+    description: >-
+      Description shown in the Steamworks build list. Empty builds one from
+      the repo, ref and short sha.
+    required: false
+    default: ""
+
+  # ----- credentials (required) --------------------------------------------
+  steam-username:
+    description: "Steam builder account username. Pass from a secret."
+    required: true
+  steam-config-vdf:
+    description: >-
+      Base64-encoded contents of the builder account's config.vdf, produced by
+      logging in once locally with steamcmd and clearing Steam Guard. Pass from
+      a secret. Raw (un-encoded) contents will fail to authenticate.
+    required: true
+
+outputs:
+  build-id:
+    description: "Steam BuildID of the uploaded build."
+    value: ${{ steps.deploy.outputs.buildId }}
+  manifest:
+    description: "Path to the generated manifest.vdf."
+    value: ${{ steps.deploy.outputs.manifest }}
+
+runs:
+  using: composite
+  steps:
+
+    # ── Guard ──────────────────────────────────────────────────────────────
+    # Everything that could make a build publicly visible is checked here,
+    # before any credential is written to disk.
+    - name: Validate branch and inputs
+      shell: bash
+      env:
+        INPUT_BRANCH:              ${{ inputs.branch }}
+        INPUT_ALLOW_PUBLIC_BRANCH: ${{ inputs.allow-public-branch }}
+        INPUT_CONTENT_ROOT:        ${{ inputs.content-root }}
+        INPUT_CONTENT_ZIP:         ${{ inputs.content-zip }}
+        INPUT_APP_ID:              ${{ inputs.app-id }}
+      run: |
+        if [ -z "${INPUT_CONTENT_ROOT}" ] && [ -z "${INPUT_CONTENT_ZIP}" ]; then
+          echo "set exactly one of content-root or content-zip"
+          exit 1
+        fi
+        if [ -n "${INPUT_CONTENT_ROOT}" ] && [ -n "${INPUT_CONTENT_ZIP}" ]; then
+          echo "content-root and content-zip are mutually exclusive"
+          exit 1
+        fi
+        if ! printf '%s' "${INPUT_APP_ID}" | grep -qE '^[0-9]+$'; then
+          echo "app-id must be numeric, got: '${INPUT_APP_ID}'"
+          exit 1
+        fi
+
+        _branchLower=$(printf '%s' "${INPUT_BRANCH}" | tr '[:upper:]' '[:lower:]')
+        case "${_branchLower}" in
+          default|public)
+            if [ "${INPUT_ALLOW_PUBLIC_BRANCH}" != "true" ]; then
+              echo "refusing to set live on branch '${INPUT_BRANCH}' - that branch is visible to everyone who owns the app."
+              echo "SteamPipe cannot set the default branch live in any case; promote it by hand in Steamworks > App Admin > Builds."
+              echo "leave 'branch' empty to upload without setting anything live."
+              exit 1
+            fi
+            ;;
+        esac
+
+        if [ -z "${INPUT_BRANCH}" ]; then
+          echo "no branch set - build will be uploaded but NOT set live."
+        else
+          echo "build will be set live on branch: ${INPUT_BRANCH}"
+        fi
+
+    # ── Content ────────────────────────────────────────────────────────────
+    # steam_deploy.sh builds its content root as "$(pwd)/$rootPath", so the
+    # path handed to it must be relative to the workspace. Everything is
+    # staged into one workspace-local directory to keep that true.
+    - name: Prepare content root
+      id: content
+      shell: bash
+      env:
+        INPUT_CONTENT_ROOT: ${{ inputs.content-root }}
+        INPUT_CONTENT_ZIP:  ${{ inputs.content-zip }}
+      run: |
+        _staging_name=".gml-steam-content"
+        _staging="${GITHUB_WORKSPACE}/${_staging_name}"
+        rm -rf "${_staging}"
+        mkdir -p "${_staging}"
+
+        if [ -n "${INPUT_CONTENT_ZIP}" ]; then
+          if [ ! -f "${INPUT_CONTENT_ZIP}" ]; then
+            echo "content-zip does not exist: ${INPUT_CONTENT_ZIP}"
+            exit 1
+          fi
+          unzip -q "${INPUT_CONTENT_ZIP}" -d "${_staging}"
+        else
+          if [ ! -d "${INPUT_CONTENT_ROOT}" ]; then
+            echo "content-root is not a directory: ${INPUT_CONTENT_ROOT}"
+            exit 1
+          fi
+          cp -a "${INPUT_CONTENT_ROOT}/." "${_staging}/"
+        fi
+
+        # A single top-level folder inside the zip would ship the game one
+        # directory deeper than the install path expects - unwrap it.
+        _entries=$(find "${_staging}" -mindepth 1 -maxdepth 1 | wc -l)
+        if [ "${_entries}" -eq 1 ]; then
+          _only=$(find "${_staging}" -mindepth 1 -maxdepth 1)
+          if [ -d "${_only}" ]; then
+            echo "unwrapping single top-level directory: $(basename "${_only}")"
+            _staging_name="${_staging_name}/$(basename "${_only}")"
+            _staging="${_only}"
+          fi
+        fi
+
+        if [ -z "$(ls -A "${_staging}")" ]; then
+          echo "content root is empty: ${_staging}"
+          exit 1
+        fi
+
+        echo "Depot contents:"
+        find "${_staging}" -maxdepth 2 -printf '  %P\n' | head -n 50
+        echo "Total size: $(du -sh "${_staging}" | cut -f1)"
+
+        echo "root=${_staging_name}" >> "${GITHUB_OUTPUT}"
+
+    - name: Resolve build description
+      id: meta
+      shell: bash
+      env:
+        INPUT_BUILD_DESCRIPTION: ${{ inputs.build-description }}
+        INPUT_BRANCH:            ${{ inputs.branch }}
+      run: |
+        _description="${INPUT_BUILD_DESCRIPTION}"
+        if [ -z "${_description}" ]; then
+          _description="${GITHUB_REPOSITORY} ${GITHUB_REF_NAME} ${GITHUB_SHA:0:7} (run ${GITHUB_RUN_ID})"
+          if [ -n "${INPUT_BRANCH}" ]; then
+            _description="[${INPUT_BRANCH}] ${_description}"
+          fi
+        fi
+        echo "Build description: ${_description}"
+        echo "description=${_description}" >> "${GITHUB_OUTPUT}"
+
+    # ── Upload ─────────────────────────────────────────────────────────────
+    # firstDepotIdOverride is only passed when depot-id is set; otherwise the
+    # action falls back to appid + 1.
+    - name: Upload to Steam
+      id: deploy
+      uses: game-ci/steam-deploy@v3
+      with:
+        username:             ${{ inputs.steam-username }}
+        configVdf:            ${{ inputs.steam-config-vdf }}
+        appId:                ${{ inputs.app-id }}
+        firstDepotIdOverride: ${{ inputs.depot-id }}
+        buildDescription:     ${{ steps.meta.outputs.description }}
+        rootPath:             ${{ steps.content.outputs.root }}
+        depot1Path:           "."
+        releaseBranch:        ${{ inputs.branch }}
+
+    - name: Summarise
+      shell: bash
+      env:
+        INPUT_APP_ID: ${{ inputs.app-id }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+        BUILD_ID:     ${{ steps.deploy.outputs.buildId }}
+      run: |
+        {
+          echo "### Steam upload"
+          echo ""
+          echo "- appid: \`${INPUT_APP_ID}\`"
+          echo "- build id: \`${BUILD_ID}\`"
+          if [ -n "${INPUT_BRANCH}" ]; then
+            echo "- set live on: \`${INPUT_BRANCH}\`"
+          else
+            echo "- **not set live** - promote it in Steamworks > App Admin > Builds"
+          fi
+        } >> "${GITHUB_STEP_SUMMARY}"

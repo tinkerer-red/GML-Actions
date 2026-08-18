@@ -84,6 +84,12 @@ inputs:
     description: "Retention in days for the uploaded artifact."
     required: false
     default: "14"
+  verbose:
+    description: >-
+      When "true", passes --verbose to gm-cli and reports disk space either
+      side of the build. Turn on while diagnosing a failing build.
+    required: false
+    default: "false"
 
 outputs:
   package-path:
@@ -227,6 +233,21 @@ runs:
       run: |
         Write-Output "::warning::No access-key or license-file supplied - gm-cli will use a guest licence, which cannot run the asset compiler."
 
+    # ── Diagnostics ────────────────────────────────────────────────────────
+    # The runner's workspace drive is small and a GameMaker runtime plus a
+    # texture-heavy build fills it quietly - the compiler dies with a bare
+    # non-zero exit and no message when it does.
+    - name: Report free space before build
+      if: inputs.verbose == 'true'
+      shell: pwsh
+      run: |
+        Get-PSDrive -PSProvider FileSystem |
+          Where-Object { $_.Used -ne $null } |
+          Select-Object Name,
+            @{n = "UsedGB";  e = { [math]::Round($_.Used  / 1GB, 2) }},
+            @{n = "FreeGB";  e = { [math]::Round($_.Free  / 1GB, 2) }} |
+          Format-Table -AutoSize
+
     # ── Build ──────────────────────────────────────────────────────────────
     - name: Package with gm-cli
       id: build
@@ -237,6 +258,7 @@ runs:
         INPUT_RUNTIME:      ${{ inputs.runtime }}
         INPUT_TOOLCHAIN:    ${{ inputs.toolchain }}
         INPUT_LICENSE_FILE: ${{ inputs.license-file }}
+        INPUT_VERBOSE:      ${{ inputs.verbose }}
         OUTPUT_NAME:        ${{ steps.name.outputs.output_name }}
       run: |
         $_output_path = Join-Path $env:RUNNER_TEMP $env:OUTPUT_NAME
@@ -255,6 +277,9 @@ runs:
         }
         if ($env:INPUT_LICENSE_FILE -ne "") {
           $_gm_args += "--license=$($env:INPUT_LICENSE_FILE)"
+        }
+        if ($env:INPUT_VERBOSE -eq "true") {
+          $_gm_args += "--verbose"
         }
 
         Write-Output "npx @gamemaker/gm-cli@latest $($_gm_args -join ' ')"
@@ -283,6 +308,58 @@ runs:
         Add-Content $env:GITHUB_OUTPUT "package_path=$_output_path"
 
         Write-Output "Built $_output_path ($([math]::Round($_size / 1MB, 2)) MB)"
+
+    # ── Failure diagnostics ────────────────────────────────────────────────
+    # GMAssetCompiler writes its own logs inside the cache. They are the only
+    # place a crash reason shows up, so they are collected before the job ends.
+    - name: Collect build logs on failure
+      if: failure()
+      shell: pwsh
+      run: |
+        Write-Output "=== free space ==="
+        Get-PSDrive -PSProvider FileSystem |
+          Where-Object { $_.Used -ne $null } |
+          Select-Object Name,
+            @{n = "FreeGB"; e = { [math]::Round($_.Free / 1GB, 2) }} |
+            Format-Table -AutoSize
+
+        $_log_dir = Join-Path $env:RUNNER_TEMP "gm-build-logs"
+        New-Item -ItemType Directory -Force -Path $_log_dir | Out-Null
+
+        if (Test-Path $env:GM_CACHE_PATH) {
+          Write-Output "=== cache size ==="
+          $_cache_size = (Get-ChildItem $env:GM_CACHE_PATH -Recurse -File -ErrorAction SilentlyContinue |
+            Measure-Object -Property Length -Sum).Sum
+          Write-Output "$([math]::Round($_cache_size / 1GB, 2)) GB in $env:GM_CACHE_PATH"
+
+          Get-ChildItem $env:GM_CACHE_PATH -Recurse -File -Include *.log, *.json, *.txt `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notlike "*runtimes-gms2*" } |
+            ForEach-Object {
+              $_dest = Join-Path $_log_dir ($_.FullName.Substring($env:GM_CACHE_PATH.Length).TrimStart("\") -replace "[\\/]", "_")
+              Copy-Item $_.FullName $_dest -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # Igor and the compiler also drop crash dumps beside the user profile.
+        foreach ($_extra in @("$env:LOCALAPPDATA\GameMakerStudio2", "$env:APPDATA\GameMakerStudio2")) {
+          if (Test-Path $_extra) {
+            Get-ChildItem $_extra -Recurse -File -Include *.log, *.txt -ErrorAction SilentlyContinue |
+              ForEach-Object { Copy-Item $_.FullName $_log_dir -Force -ErrorAction SilentlyContinue }
+          }
+        }
+
+        Write-Output "=== collected ==="
+        Get-ChildItem $_log_dir -File | Select-Object Name, Length | Format-Table -AutoSize
+
+    - name: Upload build logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: gm-build-logs-${{ steps.name.outputs.version_label }}
+        path: ${{ runner.temp }}/gm-build-logs/
+        if-no-files-found: warn
+        retention-days: 7
 
     # ── Artifact ───────────────────────────────────────────────────────────
     - name: Upload build artifact

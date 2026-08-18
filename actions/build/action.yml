@@ -90,6 +90,14 @@ inputs:
       side of the build. Turn on while diagnosing a failing build.
     required: false
     default: "false"
+  pagefile-gb:
+    description: >-
+      Size in GB of the pagefile to configure before building. GitHub's
+      standard Windows runners have ~7 GB of RAM and a small pagefile, and
+      GMAssetCompiler dies with a bare non-zero exit when a texture-heavy
+      project exhausts the commit limit. Empty leaves the runner as-is.
+    required: false
+    default: ""
 
 outputs:
   package-path:
@@ -232,6 +240,27 @@ runs:
       shell: pwsh
       run: |
         Write-Output "::warning::No access-key or license-file supplied - gm-cli will use a guest licence, which cannot run the asset compiler."
+
+    # ── Memory headroom ────────────────────────────────────────────────────
+    # Raising the commit limit is the cheapest fix for an asset compiler that
+    # is killed part-way through writing chunks. It does not add RAM, it just
+    # stops the process dying when it peaks.
+    - name: Configure pagefile
+      if: inputs.pagefile-gb != ''
+      uses: al-cheb/configure-pagefile-action@v1.4
+      with:
+        minimum-size: ${{ inputs.pagefile-gb }}GB
+        maximum-size: ${{ inputs.pagefile-gb }}GB
+        disk-root: "D:"
+
+    - name: Report memory
+      shell: pwsh
+      run: |
+        $_os = Get-CimInstance Win32_OperatingSystem
+        $_total = [math]::Round($_os.TotalVisibleMemorySize / 1MB, 2)
+        $_free = [math]::Round($_os.FreePhysicalMemory / 1MB, 2)
+        $_commit = [math]::Round($_os.TotalVirtualMemorySize / 1MB, 2)
+        Write-Output "RAM total: $_total GB, free: $_free GB, commit limit: $_commit GB"
 
     # ── Diagnostics ────────────────────────────────────────────────────────
     # The runner's workspace drive is small and a GameMaker runtime plus a

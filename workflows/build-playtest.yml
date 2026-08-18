@@ -84,6 +84,9 @@ jobs:
           # Without this gm-cli uses a guest licence and the asset compiler
           # refuses to run.
           access-key: ${{ secrets.GAMEMAKER_ACCESS_KEY }}
+          # Standard runners have ~7 GB RAM; the asset compiler needs more
+          # commit than that while writing texture and audio chunks.
+          pagefile-gb: "16"
           version-label: ${{ steps.version.outputs.label }}
           artifact-retention-days: "90"
 

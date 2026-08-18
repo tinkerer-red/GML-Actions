@@ -41,11 +41,20 @@ inputs:
     description: "gm-cli toolchain version, e.g. GMS2@2024.14.3.260. Empty = latest."
     required: false
     default: ""
+  access-key:
+    description: >-
+      GameMaker account access key, issued at
+      https://gamemaker.io/en/account/access-keys. Without one gm-cli falls
+      back to a guest licence, and the asset compiler refuses to run with
+      "Permission Error : Unable to obtain permission to execute". Pass from a
+      secret.
+    required: false
+    default: ""
   license-file:
     description: >-
-      Path to a GameMaker license .plist. Only needed for targets or runtimes
-      that require a licensed toolchain. Pass a path written from a secret,
-      never the license contents.
+      Path to a GameMaker license .plist. An alternative to access-key for
+      setups that already hold a licence file. Pass a path written from a
+      secret, never the license contents.
     required: false
     default: ""
 
@@ -96,7 +105,7 @@ runs:
 
     # ── Toolchain ──────────────────────────────────────────────────────────
     - name: Setup Node.js 24
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
         node-version: "24"
 
@@ -192,6 +201,31 @@ runs:
       with:
         path: ${{ steps.resolve.outputs.gm_cache_path }}
         key: gmcache-${{ inputs.target }}-${{ inputs.runtime }}-${{ inputs.config }}-${{ inputs.toolchain || 'latest' }}
+
+    # ── Licence ────────────────────────────────────────────────────────────
+    # The guest licence gm-cli assigns by default cannot execute
+    # GMAssetCompiler, so any real build needs a signed-in account. The key is
+    # passed through env so it never appears in the rendered command line.
+    - name: Authenticate gm-cli
+      if: inputs.access-key != ''
+      shell: pwsh
+      env:
+        INPUT_ACCESS_KEY: ${{ inputs.access-key }}
+      run: |
+        npx "@gamemaker/gm-cli@latest" login $env:INPUT_ACCESS_KEY
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "gm-cli login failed (exit $LASTEXITCODE). Check the access key is valid and not expired."
+          exit $LASTEXITCODE
+        }
+
+        Write-Output "gm-cli authenticated."
+
+    - name: Warn when unauthenticated
+      if: inputs.access-key == '' && inputs.license-file == ''
+      shell: pwsh
+      run: |
+        Write-Output "::warning::No access-key or license-file supplied - gm-cli will use a guest licence, which cannot run the asset compiler."
 
     # ── Build ──────────────────────────────────────────────────────────────
     - name: Package with gm-cli

@@ -67,7 +67,7 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Empty falls back to the ref this run was dispatched against.
           ref: ${{ inputs.ref }}
@@ -100,6 +100,9 @@ jobs:
           # Pinned to the LTS 2026 line so CI cannot drift onto a monthly
           # release the project was never opened in.
           toolchain: "GMS2@2026.0"
+          # Without this gm-cli uses a guest licence and the asset compiler
+          # refuses to run.
+          access-key: ${{ secrets.GAMEMAKER_ACCESS_KEY }}
           version-label: ${{ steps.version.outputs.label }}
           artifact-retention-days: "90"
 
